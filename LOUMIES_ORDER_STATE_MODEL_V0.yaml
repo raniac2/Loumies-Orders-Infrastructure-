@@ -489,9 +489,16 @@ payment_transitions:
   - from: DEPOSIT_RECEIVED
     to: PAID_IN_FULL
     trigger: "Balance payment received"
-  - from: [PAID_IN_FULL, DEPOSIT_RECEIVED, NOT_REQUIRED]
+  - from: DEPOSIT_RECEIVED
     to: INVOICED_OUTSTANDING
-    trigger: "Institutional/catering invoice issued for a balance not yet covered by payments received (e.g., post-fulfillment billing)"
+    trigger: >
+      Institutional/catering invoice issued for the unpaid balance
+      remaining after a deposit (e.g., post-fulfillment billing).
+      PAID_IN_FULL and NOT_REQUIRED are not valid sources: PAID_IN_FULL
+      means the payment obligation is already reconciled and cannot
+      simultaneously become an outstanding receivable under the same
+      order obligation; NOT_REQUIRED means no payment obligation exists
+      and cannot legitimately become an outstanding invoice.
   - from: PAYMENT_NOT_YET_DUE
     to: INVOICED_OUTSTANDING
     trigger: "An invoice becomes due/outstanding under the applicable terms (e.g., issued post-fulfillment) — invoice timing itself is a counterparty/configuration decision, not set here"

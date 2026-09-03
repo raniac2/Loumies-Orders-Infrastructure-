@@ -117,7 +117,7 @@ This register lists every material business rule referenced in the V0 specificat
 ## Summary — Items Blocking What
 
 - **Blocks nothing yet (safe to leave open):** A1, A6 (until helpers used), B5, D4, E6, G4, H1, H2 (pending upstream items)
-- **Blocks Order #1 / launch of the two normal operating days:** none of the items in this register. A4 and D1–D3 are explicitly corrected below to confirm they do not sit on this critical path.
+- **Explicitly confirmed NOT to block Order #1 / launch of the two normal operating days:** A4 (conditional-third-day trigger) and D1–D3 (same-day experiment settings). This is a specific adjudication of those four items only — it is not a claim that every other OPEN item in this register is non-blocking. Other OPEN items retain the blocking classifications stated in their individual rows above.
 - **Blocks Activation of a specific channel/experiment beyond the base two-day launch:** A4 (conditional third day only), B2, B4 (safe sellable number only, not full physical study), C1, C3, C5, C6 (institutional pay-on-terms channel only), D1–D3 (same-day channel/experiment only), E1–E4, F1–F3, G1–G3
 - **Blocks Implementation (a future vendor build):** A6 (if used), B1, B3, B4 (physical-capacity refinement), B6, C2, C4, E5, G5, I1 (for anything not adjudicated here)
 - **Blocks Specification (this V0 itself):** none — every item above has been deliberately left open rather than blocking the V0's completion, per the assignment's decision discipline.
