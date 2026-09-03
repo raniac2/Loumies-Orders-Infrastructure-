@@ -1,4 +1,6 @@
-# LOUMIES — Future Vendor-Neutral Requirements Checklist (V0)
+# LOUMIES — Future Vendor-Neutral Requirements Checklist (V0, corrected)
+
+**Correction note (Rio adjudication pass):** this checklist is updated to reflect the corrected order-state architecture — orthogonal lifecycle/payment/procurement/fulfillment statuses, a temporary checkout capacity-hold mechanism, and reallocatable (not permanently isolated) scheduled-preorder/same-day pools. See §8, §12, §14, §17, and new §21–22 below, and the corresponding corrections in `LOUMIES_ORDER_INFRASTRUCTURE_V0.md` and `LOUMIES_ORDER_STATE_MODEL_V0.yaml`.
 
 **Purpose:** Translate `LOUMIES_ORDER_INFRASTRUCTURE_V0.md` and `LOUMIES_ORDER_STATE_MODEL_V0.yaml` into a checklist that can be used to evaluate *any* future commerce/payment/ordering vendor against LOUMIES's own requirements.
 
@@ -15,6 +17,7 @@ Each item below is a capability requirement, phrased as "the system must be able
 - [ ] Block submission once cutoff has passed for a given date, with a clear customer-facing reason.
 - [ ] Support order modification pre-confirmation without corrupting capacity accounting.
 - [ ] Support a capacity-aware, non-silent modification path post-confirmation (or explicitly disallow modification post-confirmation, per §4/C2 of the open-decisions register, until that policy is set).
+- [ ] Represent lifecycle status (`CONFIRMED`, `PRODUCTION_COMMITTED`, etc.) independently of payment status — never infer one from the other (see §8 below).
 
 ## 2. Cutoff Control
 
@@ -25,10 +28,10 @@ Each item below is a capability requirement, phrased as "the system must be able
 ## 3. Order / Date Capacity
 
 - [ ] Support a configurable ceiling on total orders (or order volume) per operating date, independent of item-level limits.
-- [ ] Stop offering a date for new orders once date capacity is reached, while leaving other dates unaffected.
-- [ ] Allow the operator to adjust date capacity up or down at any time before it's exhausted.
-- [ ] Decrement date capacity exactly once per order, only at the point the order reaches a `CONFIRMED`-equivalent state (never at cart/submission).
-- [ ] Release date capacity on cancellation from any state that had already decremented it.
+- [ ] Stop offering a date for new orders once its allocated-and-unheld capacity is reached, while leaving other dates unaffected.
+- [ ] Allow the operator to adjust sellable/allocated date capacity up or down at any time, subject to not revoking already-held or already-confirmed units (see §21).
+- [ ] Decrement into confirmed capacity exactly once per order, atomically with the order's lifecycle transition into `CONFIRMED` (never at cart/submission, and never twice).
+- [ ] Release held or confirmed date capacity on hold-expiry, hold-abandonment, cancellation, or expiration.
 
 ## 4. Item Inventory
 
@@ -39,12 +42,13 @@ Each item below is a capability requirement, phrased as "the system must be able
 
 ## 5. Same-Day Availability
 
-- [ ] Support a same-day order type that is structurally and numerically separate from scheduled-preorder inventory (never shares a pool, never double-counts).
+- [ ] Support a same-day allocation pool that is separately identifiable and accounted for from the scheduled-preorder pool — never silently double-counted — while remaining **explicitly reallocatable** between the two by the operator (corrected: not a permanently walled-off pool; see §22).
 - [ ] Support a configurable total same-day capacity per date, settable to any value including zero (i.e., same-day ordering fully off for a date) — no built-in assumption of a fixed quantity.
 - [ ] Support per-item same-day quantity limits, independent of the overall same-day ceiling.
 - [ ] Support immediate manual pause/closure of same-day ordering as a whole, independent of remaining numeric capacity.
 - [ ] Support enabling same-day ordering only on operator-selected dates, not automatically on every operating day.
 - [ ] Support fulfillment-method eligibility (pickup/delivery) that can differ by date and by order type.
+- [ ] Support the same temporary capacity-hold mechanism at same-day checkout as scheduled preorder (see §21) — same-day is not exempt from the oversell-race correction.
 
 ## 6. Pickup
 
@@ -59,13 +63,15 @@ Each item below is a capability requirement, phrased as "the system must be able
 - [ ] Support recording delivery completion, and recording a delivery exception (failed attempt) as a distinct state.
 - [ ] Support a placeholder for a delivery charge (value not set here — see open decisions G1).
 
-## 8. Payment Capability
+## 8. Payment Capability — corrected: four orthogonal status dimensions
 
-- [ ] Support recording payment status as a field independent of order status (an order can be `CONFIRMED` while payment is `PAID`, or `FULFILLED` while payment is still pending, per the state model's `INVOICED`/`PAID` split).
-- [ ] Support a payment-failure path that leaves the order unconfirmed, non-capacity-consuming, and excluded from the production manifest.
+- [ ] Support **lifecycle status** (`DRAFT`/`INQUIRY`/…/`CONFIRMED`/`PRODUCTION_COMMITTED`/…/`CLOSED`), **payment status** (`NOT_STARTED`/`PAYMENT_PENDING`/`PAYMENT_FAILED`/`DEPOSIT_RECEIVED`/`PAID_IN_FULL`/`INVOICED_OUTSTANDING`/refund states), **procurement status** (`NOT_APPLICABLE`/`NOT_REQUIRED`/`PENDING`/`AUTHORIZED`/`DECLINED`), and **fulfillment status** (`NOT_READY`/`READY`/`FULFILLED`/`FULFILLMENT_EXCEPTION`) as four independent fields on the order record — never inferring one from another.
+- [ ] Support a scheduled-preorder order that is `lifecycle = CONFIRMED` and `payment = PAID_IN_FULL` at the same moment (payment required before confirmation for this order type), not only after fulfillment.
+- [ ] Support an institutional order that is `fulfillment = FULFILLED` while `payment = INVOICED_OUTSTANDING`, without treating this as an error state.
+- [ ] Support a payment-failure path that leaves the order's lifecycle short of `CONFIRMED`, non-capacity-consuming, and excluded from the production manifest.
 - [ ] Support deposit-based payment (partial now, balance later) for group/catering and institutional orders, without forcing full payment at booking for those order types.
 - [ ] Support invoicing as a distinct downstream step from fulfillment for institutional (and optionally group/catering) orders.
-- [ ] Support recording procurement authorization (PO or equivalent) as a field distinct from both payment status and customer acceptance.
+- [ ] Support recording procurement authorization as its own field with a clean affirmative `AUTHORIZED` value (not merely the absence of a blocker), distinct from both payment status and customer acceptance — see §12.
 - [ ] Support representing different payment/fee structures per channel (§11) without a schema change per channel added later.
 - [ ] **Not** assumed: any specific payment processor, integration, or API. This document defines only the capability surface a processor must satisfy.
 
@@ -83,16 +89,18 @@ Each item below is a capability requirement, phrased as "the system must be able
 ## 11. Catering Workflow
 
 - [ ] Support a request-and-review workflow structurally distinct from cart checkout: inquiry → qualification → quote → acceptance → (deposit) → confirmed booking.
-- [ ] Support capturing catering-specific intake fields (date, headcount, organization, fulfillment method, location, requested package, budget, dietary notes, contact info, special notes) at the inquiry stage, expandable as the request progresses.
+- [ ] Support capturing catering-specific intake fields (date, headcount, organization, fulfillment method, location, requested package, budget, dietary notes, contact info, special notes) at first contact, expandable as the request progresses.
 - [ ] Support both custom (individually quoted) and standardized-package catering within the same workflow, without a separate parallel system for each.
-- [ ] Ensure inquiry- and quote-stage catering records are excluded from confirmed-revenue reporting and from the production manifest until they reach a `CONFIRMED`-equivalent state.
+- [ ] Support issuing a quote directly from a single complete initial request **without requiring separately recorded inquiry/qualification waypoints** when the request already contains what those steps would have captured — corrected: do not force artificial state theater (see infrastructure doc §6).
+- [ ] Nonetheless keep inquiry, quote, acceptance, confirmed booking, production commitment, fulfillment, and payment as distinct recorded events/timestamps, even when they occur close together — evidentiary integrity, not bureaucratic ceremony.
+- [ ] Ensure inquiry- and quote-stage catering records are excluded from confirmed-revenue reporting and from the production manifest until lifecycle reaches `CONFIRMED`.
 
 ## 12. Institutional Workflow
 
-- [ ] Support a procurement-style workflow distinct from both cart checkout and standard catering: inquiry → quote/SOW → acceptance → procurement authorization → confirmed order → fulfillment → invoice → paid.
-- [ ] Support representing procurement authorization (PO or equivalent) as a state distinct from customer acceptance, with the ability to require it before confirmation for institutions that need it, and to skip it for institutions that don't (see open decision F1).
+- [ ] Support a procurement-style workflow distinct from both cart checkout and standard catering: inquiry → quote/SOW → acceptance → procurement status → confirmed order → fulfillment → invoice → paid.
+- [ ] Support a **clean affirmative `AUTHORIZED` procurement status** (not merely the absence of a blocker) as distinct from customer acceptance, with the ability to require it before confirmation for counterparties that need it, and represent `NOT_REQUIRED` for counterparties that don't — **per counterparty, never a universal institutional default** (see open decision F1).
 - [ ] Support post-fulfillment invoicing with configurable payment terms (net terms placeholder — value not set here).
-- [ ] Prevent an unauthorized or unpaid institutional order from being counted as confirmed production under any circumstance.
+- [ ] Prevent an order whose procurement status is `PENDING` or `DECLINED` from reaching `CONFIRMED` or `PRODUCTION_COMMITTED` under any circumstance, regardless of customer acceptance.
 
 ## 13. Exports
 
@@ -100,12 +108,12 @@ Each item below is a capability requirement, phrased as "the system must be able
 - [ ] Support exporting pickup and delivery manifests separately.
 - [ ] Support exporting raw order/event data for independent metrics calculation (§14 of the narrative doc), not only vendor-native dashboards.
 
-## 14. Reporting
+## 14. Reporting — corrected: six distinct figures, never silently combined
 
-- [ ] Support reporting confirmed revenue separately by order type/channel (scheduled preorder, same-day, group/catering, institutional).
-- [ ] Support reporting pipeline (inquiry/quote-stage) separately from confirmed revenue — never commingled in a single "sales" figure.
-- [ ] Support reporting same-day sell-through (exposed vs. sold) and unsold same-day inventory.
-- [ ] Support reporting cancellations, failed payments, and fulfillment failures as discrete, filterable event types, each with reason and initiating party where applicable.
+- [ ] Support reporting, as separate figures that are never silently combined into one "revenue" or "sales" number: **pipeline value** (lifecycle pre-`CONFIRMED`), **confirmed/booked revenue** (lifecycle ≥ `CONFIRMED`, regardless of payment), **paid revenue** (`payment = PAID_IN_FULL`, regardless of lifecycle/fulfillment), **fulfilled revenue** (`fulfillment = FULFILLED`, regardless of payment), **outstanding receivable** (`payment = INVOICED_OUTSTANDING` or a deposit with balance remaining), and **cancelled/reversed value**.
+- [ ] Support slicing each of the six figures above by order type/channel (scheduled preorder, same-day, group/catering, institutional).
+- [ ] Support reporting same-day sell-through (allocated vs. sold), unsold same-day inventory, and the effect of any deliberate operator reallocation between pools (see §22).
+- [ ] Support reporting cancellations, failed payments, and fulfillment failures as discrete, filterable event types, each with reason code and initiating party where applicable.
 - [ ] Support reporting revenue confirmed before vs. after preorder cutoff for a given date.
 
 ## 15. APIs / Integration Capability
@@ -122,20 +130,20 @@ Each item below is a capability requirement, phrased as "the system must be able
 
 All items from `LOUMIES_ORDER_INFRASTRUCTURE_V0.md` §13 must be exposed in *some* form (interface unspecified — not a UI requirement, a capability requirement):
 
-- [ ] Open/close an operating date
+- [ ] Open/close an operating date, and reassign which weekday it falls on (day-count architecture is fixed; weekday identity is not — see open decision A3b)
 - [ ] Change the preorder cutoff
 - [ ] Change fulfillment windows
-- [ ] Set/reduce same-day capacity
+- [ ] Set sellable capacity per date/item (which may sit below physical capacity), and deliberately **reallocate** allocated-but-unheld capacity between the scheduled-preorder and same-day pools, with the reallocation recorded as an auditable event
 - [ ] Set item availability / mark items sold out
 - [ ] Pause all ordering / reopen ordering
-- [ ] Review pending group/catering inquiries
+- [ ] Review pending group/catering and institutional inquiries
 - [ ] Record quote status and customer acceptance
-- [ ] Record institutional procurement authorization
-- [ ] Mark an order confirmed / fulfilled
-- [ ] Cancel an order with a required reason
-- [ ] Identify outstanding exceptions
-- [ ] View production, pickup, and delivery manifests
-- [ ] Distinguish committed revenue from pipeline in any summary view
+- [ ] Record institutional procurement status (`PENDING`/`AUTHORIZED`/`DECLINED`/`NOT_REQUIRED`) per counterparty
+- [ ] Mark an order's lifecycle confirmed / production-committed, and mark fulfillment ready / fulfilled
+- [ ] Cancel an order with a required reason code
+- [ ] Identify outstanding exceptions (lifecycle `EXCEPTION` and `FULFILLMENT_EXCEPTION`)
+- [ ] View the active (regenerating) production, pickup, and delivery manifests
+- [ ] Distinguish pipeline value, confirmed/booked revenue, paid revenue, and outstanding receivable from one another in any summary view (see §14)
 
 ## 18. Transaction Fees
 
@@ -150,9 +158,25 @@ All items from `LOUMIES_ORDER_INFRASTRUCTURE_V0.md` §13 must be exposed in *som
 
 ## 20. Production Exports / Manifests
 
-- [ ] Generate a production manifest per operating date containing only orders that have reached a `PRODUCTION_COMMITTED`-equivalent state (never inquiry- or quote-stage demand — see state model guardrails).
-- [ ] Include in the manifest: confirmed order counts and revenue by order type; product quantities and totals; same-day inventory reserved; pickup/delivery schedules; production notes; dietary/allergen notes where collected; packaging quantities where derivable; flagged exceptions; and payment/procurement exceptions currently blocking production commitment.
-- [ ] Automatically exclude/remove any order that transitions to a cancelled or expired state from the manifest, even if it was previously included.
+- [ ] Generate a production manifest per operating date containing only orders with lifecycle `PRODUCTION_COMMITTED` (never inquiry- or quote-stage demand — see state model guardrails).
+- [ ] Include in the manifest: confirmed order counts and revenue by order type; product quantities and totals; same-day allocation (reflecting any reallocation); pickup/delivery schedules; production notes; dietary/allergen notes where collected; packaging quantities where derivable; flagged exceptions; and payment/procurement exceptions currently blocking production commitment.
+- [ ] Treat the manifest as a **live, regenerating view** — corrected: automatically exclude/remove any order that transitions to `CANCELLED` or `EXPIRED`, or that is deliberately walked back out of `PRODUCTION_COMMITTED` before production begins, and regenerate the active manifest to reflect current valid commitments, while optionally retaining prior snapshots for audit (never presenting a stale snapshot as current).
+
+## 21. Capacity Hold / Checkout-Race Prevention
+
+- [ ] Support a temporary capacity reservation ("hold") created the moment a customer begins checkout against a specific unit of scheduled-preorder or same-day capacity, before payment completes.
+- [ ] Ensure a held unit is not offered as available to a second, simultaneous checkout attempt — the mechanism that makes it structurally impossible for two customers to both successfully purchase the same final unit (Case 1 in the infrastructure doc's validation set).
+- [ ] Support **atomic conversion** of a hold into confirmed capacity in the same operation that confirms the order, only on payment success.
+- [ ] Support **automatic release** of a hold — back to its allocation pool — on payment failure, customer abandonment, or hold expiry, with a configurable expiry duration (value not set here; see open decision C5).
+- [ ] **Not** required: automatic capacity holds during group/catering or institutional inquiry/quote stages. An optional, manually operator-initiated date hold for a serious prospect is a plausible future tool, tracked as open (see open decision E6), not implemented as a default rule.
+
+## 22. Capacity Layers & Pool Reallocation
+
+- [ ] Support representing capacity in (at minimum) five distinct layers per date/item/labor-sensitive category: **physical** (production ceiling), **sellable** (what the operator chooses to expose — may be below physical), **allocated** (sellable capacity divided among pools), **temporarily held** (active checkout holds), and **confirmed** (consumed by `CONFIRMED`-or-later orders).
+- [ ] Never automatically expose all physically possible production as sellable capacity — sellable capacity is always an operator choice, which may sit below the physical ceiling.
+- [ ] Support the operator deliberately reallocating allocated-but-unheld-and-unconfirmed capacity between the scheduled-preorder and same-day pools at any time, as a discrete auditable event (source, destination, quantity, date/item, timestamp, operator identity).
+- [ ] Prevent reallocation from ever revoking a unit already under an active hold or already confirmed.
+- [ ] Prevent total allocated capacity, across all pools for a given date/item, from ever exceeding sellable capacity, regardless of how many reallocations occur.
 
 ---
 

@@ -1,15 +1,28 @@
 # =============================================================================
-# LOUMIES ORDER STATE MODEL — V0
+# LOUMIES ORDER STATE MODEL — V0 (Rio adjudication / correction pass)
 # =============================================================================
 # STATUS: SPECIFICATION ARTIFACT ONLY.
 # This YAML is NOT executable application code, NOT a vendor configuration
 # file, and NOT a database schema. It is a formal, vendor-neutral description
-# of required states, transitions, prerequisites, and effects, intended to be
-# read by humans (Rania, Rio, Mona) and by any future engineer/vendor
-# implementing LOUMIES's order infrastructure.
+# of required states, transitions, prerequisites, and effects.
 #
-# Companion narrative: LOUMIES_ORDER_INFRASTRUCTURE_V0.md (§9 summarizes this
-# file; this file governs on any conflict of detail).
+# CORRECTION LOG (this pass):
+#   The original V0 modeled commercial lifecycle, payment/settlement,
+#   procurement authorization, and fulfillment as one largely linear state
+#   sequence. That collapsed cases where an order is legitimately CONFIRMED
+#   or even FULFILLED while payment/procurement sit in a different, still-
+#   valid state (e.g. a paid preorder awaiting fulfillment; an invoiced
+#   institutional order that is fulfilled but not yet paid). This version
+#   treats lifecycle, payment, procurement, and fulfillment as four
+#   ORTHOGONAL dimensions on one order record, adds an explicit temporary
+#   capacity-hold mechanism to close a checkout oversell race, and models
+#   capacity as five distinct layers (physical / sellable / allocated /
+#   held / confirmed) with auditable, operator-driven reallocation between
+#   the scheduled-preorder and same-day pools. See
+#   LOUMIES_ORDER_INFRASTRUCTURE_V0.md and LOUMIES_ORDER_OPEN_DECISIONS_V0.md
+#   for the corresponding narrative and governance corrections.
+#
+# Companion narrative: LOUMIES_ORDER_INFRASTRUCTURE_V0.md
 # Companion decision register: LOUMIES_ORDER_OPEN_DECISIONS_V0.md
 #
 # No numeric capacities, prices, fees, cutoffs, or thresholds are set here.
@@ -17,861 +30,764 @@
 
 meta:
   title: "LOUMIES Order State Model"
-  version: "v0"
+  version: "v0 (corrected)"
   status: "specification-only, not executable"
   vendor_neutral: true
   proof_context: "Ithaca, NY limited paid proof, approx. 3-6 months"
+  model_shape: "four orthogonal status dimensions per order, plus a capacity-hold entity and a five-layer capacity model"
 
 # -----------------------------------------------------------------------------
-# ORDER TYPES — the workflow dimension. Every order carries exactly one.
+# ORDER TYPES — every order carries exactly one. Governs which dimension
+# values/transitions are reachable, not a separate state machine per type.
 # -----------------------------------------------------------------------------
 order_types:
   - id: scheduled_preorder
     label: "Scheduled individual preorder"
     description: >
       Consumer orders a specific future operating date, ahead of a cutoff.
-      Primary individual-consumer channel under current working hypothesis.
+      Working commercial hypothesis as primary individual-consumer channel
+      (see open decisions) — not owner-locked.
   - id: same_day
     label: "Limited same-day order"
     description: >
       Consumer orders against deliberately capacity-limited same-day
-      inventory, separate from scheduled-preorder inventory.
+      allocation. Experimental / configurable working hypothesis, not an
+      owner-locked permanent channel requirement (see open decisions).
   - id: group_catering
     label: "Group / catering"
     description: >
       Request-and-review workflow; not ordinary cart checkout. May be
-      custom (reviewed/quoted) or a standardized package.
+      custom (reviewed/quoted) or a standardized package. Owner-locked as
+      a permitted proof order type; its operating parameters (minimums,
+      deposits, lead time) remain open.
   - id: institutional
     label: "Institutional purchasing"
     description: >
-      Procurement-style workflow. May require formal PO/authorization
-      distinct from a customer's verbal or written acceptance.
+      Procurement-style workflow. Whether a given counterparty requires
+      formal PO/authorization is per-counterparty, never assumed
+      universally. Owner-locked as a permitted proof order type.
 
+# =============================================================================
+# DIMENSION A — ORDER LIFECYCLE STATUS
+# =============================================================================
+# The commercial/production narrative of the order: how far it has moved
+# from first contact toward a closed, complete transaction. Does NOT encode
+# payment, procurement, or fulfillment outcomes — those are dimensions B-D.
 # -----------------------------------------------------------------------------
-# STATES
-# -----------------------------------------------------------------------------
-# Fields:
-#   id                          - canonical state identifier
-#   label                       - human-readable name
-#   description                 - what the state means
-#   applicable_order_types      - which order_types can occupy this state
-#                                  ("all" = every order type)
-#   category                    - pre_commitment | confirmed | fulfillment |
-#                                  settlement | terminal_success |
-#                                  terminal_cancelled | terminal_other |
-#                                  exception
-#   counts_as_confirmed_revenue - may this state be summed as booked/
-#                                  confirmed revenue for reporting?
-#   counts_as_production_commitment - may an order in this state appear on
-#                                  the production manifest (§12 of the
-#                                  narrative doc)?
-#   consumes_capacity           - does entering this state decrement
-#                                  date/item/labor-sensitive capacity?
-#   terminal                    - true if no further transition is defined
-# -----------------------------------------------------------------------------
-states:
+lifecycle_states:
 
   - id: DRAFT
     label: "Draft"
     description: >
-      Cart or request being built by the customer/operator; not yet
-      submitted. Not guaranteed to be persisted as a formal order record.
+      Cart or request being composed; not yet submitted. Not guaranteed to
+      be persisted as a formal order record.
     applicable_order_types: [all]
-    category: pre_commitment
-    counts_as_confirmed_revenue: false
-    counts_as_production_commitment: false
-    consumes_capacity: false
+    skippable: true
     terminal: false
 
   - id: INQUIRY
     label: "Inquiry received"
     description: >
-      Initial group/catering or institutional contact captured. Not yet
-      qualified. Explicitly NOT booked demand.
+      Initial group/catering or institutional contact captured. Optional
+      as a distinct recorded step — see skippable note below.
     applicable_order_types: [group_catering, institutional]
-    category: pre_commitment
-    counts_as_confirmed_revenue: false
-    counts_as_production_commitment: false
-    consumes_capacity: false
+    skippable: true
     terminal: false
 
-  - id: QUALIFICATION_IN_PROGRESS
-    label: "Qualification in progress"
+  - id: QUALIFICATION
+    label: "Qualification"
     description: >
-      LOUMIES is reviewing feasibility (date fit, capacity, scope) before
-      committing to prepare a quote.
+      LOUMIES reviews feasibility (date fit, capacity, scope) before
+      issuing a quote. Optional as a distinct recorded step.
     applicable_order_types: [group_catering, institutional]
-    category: pre_commitment
-    counts_as_confirmed_revenue: false
-    counts_as_production_commitment: false
-    consumes_capacity: false
-    terminal: false
-
-  - id: QUALIFICATION_DECLINED
-    label: "Qualification declined"
-    description: >
-      LOUMIES determined it cannot or will not service this inquiry
-      (capacity, scope, timing, fit). Terminal.
-    applicable_order_types: [group_catering, institutional]
-    category: terminal_other
-    counts_as_confirmed_revenue: false
-    counts_as_production_commitment: false
-    consumes_capacity: false
-    terminal: true
-
-  - id: QUOTE_REQUESTED
-    label: "Quote requested"
-    description: "Customer/institution has explicitly asked for pricing."
-    applicable_order_types: [group_catering, institutional]
-    category: pre_commitment
-    counts_as_confirmed_revenue: false
-    counts_as_production_commitment: false
-    consumes_capacity: false
+    skippable: true
     terminal: false
 
   - id: QUOTE_SENT
     label: "Quote sent"
     description: >
       LOUMIES has issued a quote and/or SOW. A quote is NOT booked demand
-      and must never be summed into confirmed revenue or the production
-      manifest.
+      and never counts toward confirmed/booked revenue or the production
+      manifest (see reporting_correction below). NOT skippable — must be
+      a distinct recorded event from acceptance.
     applicable_order_types: [group_catering, institutional]
-    category: pre_commitment
-    counts_as_confirmed_revenue: false
-    counts_as_production_commitment: false
-    consumes_capacity: false
+    skippable: false
     terminal: false
-
-  - id: QUOTE_EXPIRED
-    label: "Quote expired"
-    description: >
-      Quote acceptance window lapsed without action. Terminal unless a
-      new quote cycle is explicitly started (re-enters QUOTE_REQUESTED as
-      a new attempt, not a resurrection of this record's state).
-    applicable_order_types: [group_catering, institutional]
-    category: terminal_other
-    counts_as_confirmed_revenue: false
-    counts_as_production_commitment: false
-    consumes_capacity: false
-    terminal: true
 
   - id: CUSTOMER_ACCEPTED
     label: "Customer/institution accepted quote"
     description: >
-      Verbal or written acceptance of quote terms is recorded. For
-      institutional orders, this is explicitly NOT the same as formal
-      procurement authorization and does not by itself unlock production
-      commitment when an institution requires a PO or equivalent.
+      Verbal or written acceptance of quote terms is recorded (which of
+      the two is recorded alongside the state). For institutional orders,
+      acceptance is explicitly NOT procurement authorization — see
+      dimension C. NOT skippable — must be distinct from QUOTE_SENT and
+      from CONFIRMED.
     applicable_order_types: [group_catering, institutional]
-    category: pre_commitment
-    counts_as_confirmed_revenue: false
-    counts_as_production_commitment: false
-    consumes_capacity: false
-    terminal: false
-
-  - id: PROCUREMENT_AUTHORIZATION_PENDING
-    label: "Procurement authorization pending"
-    description: >
-      Institution has accepted terms but formal authorization (PO or
-      equivalent) has not yet been received. Order cannot proceed to
-      confirmation while in this state if the institution requires formal
-      authorization.
-    applicable_order_types: [institutional]
-    category: pre_commitment
-    counts_as_confirmed_revenue: false
-    counts_as_production_commitment: false
-    consumes_capacity: false
-    terminal: false
-
-  - id: PROCUREMENT_AUTHORIZATION_DECLINED
-    label: "Procurement authorization declined"
-    description: "Institution's procurement process did not authorize the purchase. Terminal."
-    applicable_order_types: [institutional]
-    category: terminal_other
-    counts_as_confirmed_revenue: false
-    counts_as_production_commitment: false
-    consumes_capacity: false
-    terminal: true
-
-  - id: SUBMITTED
-    label: "Submitted"
-    description: >
-      Consumer has submitted a scheduled-preorder or same-day order and
-      is proceeding to payment. Not yet confirmed; consumes no capacity.
-    applicable_order_types: [scheduled_preorder, same_day]
-    category: pre_commitment
-    counts_as_confirmed_revenue: false
-    counts_as_production_commitment: false
-    consumes_capacity: false
-    terminal: false
-
-  - id: PAYMENT_PENDING
-    label: "Payment pending"
-    description: "A payment or deposit attempt is in progress; outcome not yet known."
-    applicable_order_types: [all]
-    category: pre_commitment
-    counts_as_confirmed_revenue: false
-    counts_as_production_commitment: false
-    consumes_capacity: false
-    terminal: false
-
-  - id: PAYMENT_FAILED
-    label: "Payment failed"
-    description: >
-      Payment/deposit attempt was unsuccessful. Order remains
-      unconfirmed. Must not consume capacity and must not appear on any
-      production manifest. Customer may retry (returns to PAYMENT_PENDING
-      or SUBMITTED depending on flow) or the order may expire/be
-      abandoned.
-    applicable_order_types: [all]
-    category: exception
-    counts_as_confirmed_revenue: false
-    counts_as_production_commitment: false
-    consumes_capacity: false
-    terminal: false
-
-  - id: DEPOSIT_CONFIRMED
-    label: "Deposit confirmed"
-    description: >
-      A deposit has been received for group/catering or institutional
-      orders that require one; balance remains outstanding. Whether a
-      deposit is required, and its amount, is OPEN (see decision
-      register).
-    applicable_order_types: [group_catering, institutional]
-    category: pre_commitment
-    counts_as_confirmed_revenue: false
-    counts_as_production_commitment: false
-    consumes_capacity: false
+    skippable: false
     terminal: false
 
   - id: CONFIRMED
     label: "Confirmed"
     description: >
-      All prerequisites for this order type are satisfied (payment/deposit
-      as applicable, customer acceptance as applicable, procurement
-      authorization as applicable). This is the single gate that makes an
-      order eligible to become a production commitment. Capacity is
-      decremented exactly once, on entry into this state.
+      The order is a legitimate booked commercial commitment: every
+      cross-dimension gate this order type requires is satisfied (see
+      gates.to_CONFIRMED below). This is the single point at which a
+      capacity hold (if used) is atomically converted into confirmed
+      capacity. CONFIRMED does NOT imply PAID — see dimension B for the
+      canonical example of a paid-in-full preorder vs. an authorized-but-
+      unpaid institutional booking. NOT skippable.
     applicable_order_types: [all]
-    category: confirmed
-    counts_as_confirmed_revenue: true
-    counts_as_production_commitment: false
-    consumes_capacity: true
+    skippable: false
     terminal: false
 
   - id: PRODUCTION_COMMITTED
     label: "Production committed"
     description: >
-      Order has been included in a generated production manifest for its
-      operating date. Only CONFIRMED orders (or later states reached from
-      CONFIRMED) may enter this state.
+      The confirmed order has been admitted into the ACTIVE production
+      plan for its relevant production cycle. Related to but distinct
+      from CONFIRMED (see production_manifest section) — a confirmed
+      order is a legitimate booking; production-committed means it is
+      currently reflected in the live manifest. If a confirmed order
+      legitimately changes or cancels before production begins, it is
+      removed from PRODUCTION_COMMITTED and the active manifest
+      regenerates; this is not a rewrite of history if audit records are
+      retained. NOT skippable.
     applicable_order_types: [all]
-    category: confirmed
-    counts_as_confirmed_revenue: true
-    counts_as_production_commitment: true
-    consumes_capacity: false
+    skippable: false
     terminal: false
 
-  - id: READY_FOR_FULFILLMENT
-    label: "Ready for fulfillment"
-    description: "Production complete; awaiting pickup or delivery."
+  - id: EXCEPTION
+    label: "Exception (lifecycle held)"
+    description: >
+      Generic operator-review hold, reachable from any pre-terminal
+      lifecycle state, used when lifecycle progression cannot continue
+      without operator judgment (e.g., a payment succeeded but an
+      operational conflict was discovered, or a capacity conflict
+      surfaced post-confirmation). Distinct from FULFILLMENT_EXCEPTION
+      (dimension D), which is fulfillment-specific. Must resolve to
+      either the lifecycle state the order would otherwise have reached,
+      or to CANCELLED.
     applicable_order_types: [all]
-    category: fulfillment
-    counts_as_confirmed_revenue: true
-    counts_as_production_commitment: true
-    consumes_capacity: false
+    skippable: false
     terminal: false
 
-  - id: FULFILLED
-    label: "Fulfilled"
+  - id: CANCELLED
+    label: "Cancelled"
     description: >
-      Pickup or delivery completed successfully. Does NOT imply payment
-      is complete (institutional orders may be invoiced post-fulfillment
-      — see PAID).
+      Terminal. Reached from customer cancellation, LOUMIES cancellation,
+      qualification decline, procurement decline, or unresolved
+      exception. The distinguishing detail (who/why) is carried in a
+      required cancellation_reason field/enum, not as separate lifecycle
+      states, to keep the lifecycle set minimal (see reason_code catalog
+      below). Releases any held/confirmed capacity and removes the order
+      from the active production manifest.
     applicable_order_types: [all]
-    category: fulfillment
-    counts_as_confirmed_revenue: true
-    counts_as_production_commitment: true
-    consumes_capacity: false
-    terminal: false
-
-  - id: FULFILLMENT_EXCEPTION
-    label: "Fulfillment exception"
-    description: >
-      Pickup or delivery was attempted but failed (no-show, failed
-      delivery attempt, address issue, etc.). Flagged for operator
-      review; not silently marked FULFILLED and not silently dropped.
-    applicable_order_types: [all]
-    category: exception
-    counts_as_confirmed_revenue: true
-    counts_as_production_commitment: true
-    consumes_capacity: false
-    terminal: false
-
-  - id: INVOICED
-    label: "Invoiced"
-    description: >
-      Invoice issued for balance due, typically post-fulfillment for
-      institutional orders and optionally for group/catering.
-    applicable_order_types: [group_catering, institutional]
-    category: settlement
-    counts_as_confirmed_revenue: true
-    counts_as_production_commitment: true
-    consumes_capacity: false
-    terminal: false
-
-  - id: PAID
-    label: "Paid"
-    description: "Full payment for the order has been reconciled."
-    applicable_order_types: [all]
-    category: settlement
-    counts_as_confirmed_revenue: true
-    counts_as_production_commitment: true
-    consumes_capacity: false
-    terminal: false
-
-  - id: CLOSED
-    label: "Closed"
-    description: >
-      Order is fully complete: fulfilled and paid (or otherwise
-      settled), with no outstanding obligation. Terminal.
-    applicable_order_types: [all]
-    category: terminal_success
-    counts_as_confirmed_revenue: true
-    counts_as_production_commitment: true
-    consumes_capacity: false
-    terminal: true
-
-  - id: CANCELLED_BY_CUSTOMER
-    label: "Cancelled by customer"
-    description: >
-      Customer-initiated cancellation, with reason. Releases any capacity
-      the order had consumed and is removed from any active production
-      manifest. Terminal.
-    applicable_order_types: [all]
-    category: terminal_cancelled
-    counts_as_confirmed_revenue: false
-    counts_as_production_commitment: false
-    consumes_capacity: false
-    terminal: true
-
-  - id: CANCELLED_BY_LOUMIES
-    label: "Cancelled by LOUMIES"
-    description: >
-      Operator-initiated cancellation, with reason, distinguishable from
-      customer-initiated cancellation for metrics (§14 of narrative doc).
-      Same capacity-release and manifest-removal effect as
-      CANCELLED_BY_CUSTOMER. Terminal.
-    applicable_order_types: [all]
-    category: terminal_cancelled
-    counts_as_confirmed_revenue: false
-    counts_as_production_commitment: false
-    consumes_capacity: false
+    skippable: false
     terminal: true
 
   - id: EXPIRED
     label: "Expired"
     description: >
-      Order/request lapsed without completion through no explicit
-      cancellation (e.g., abandoned cart past cutoff, unaccepted quote
-      past its window — see also QUOTE_EXPIRED for the quote-specific
-      case). Terminal; releases any capacity held.
+      Terminal. Reached when a cutoff, hold, or quote-acceptance window
+      lapses without the order reaching CONFIRMED. Distinguished from
+      CANCELLED because no party affirmatively cancelled — the window
+      simply closed. Releases any held capacity.
     applicable_order_types: [all]
-    category: terminal_other
-    counts_as_confirmed_revenue: false
-    counts_as_production_commitment: false
-    consumes_capacity: false
+    skippable: false
     terminal: true
 
-  - id: EXCEPTION_HOLD
-    label: "Exception hold"
+  - id: CLOSED
+    label: "Closed"
     description: >
-      Generic operator-review hold usable from multiple points in the
-      lifecycle (e.g., payment succeeded but an operational conflict was
-      discovered; a capacity conflict surfaced post-confirmation). Order
-      is visibly flagged, not silently treated as clean or lost. Must be
-      resolved by explicit operator action into either a forward state
-      (e.g., CONFIRMED, PRODUCTION_COMMITTED) or a terminal state
-      (e.g., CANCELLED_BY_LOUMIES).
+      Terminal. Reached only when fulfillment_status = FULFILLED (or a
+      resolved fulfillment exception) AND payment_status is at its
+      order-type-appropriate completion value (PAID_IN_FULL, or an
+      explicitly accepted NOT_REQUIRED) AND procurement_status is
+      AUTHORIZED/NOT_REQUIRED/NOT_APPLICABLE. No outstanding obligation
+      remains.
     applicable_order_types: [all]
-    category: exception
-    counts_as_confirmed_revenue: false
-    counts_as_production_commitment: false
-    consumes_capacity: false
-    terminal: false
+    skippable: false
+    terminal: true
 
-# -----------------------------------------------------------------------------
-# TRANSITIONS
-# -----------------------------------------------------------------------------
-# Fields:
-#   id                     - transition identifier
-#   from / to              - state ids
-#   applicable_order_types - which order_types this transition applies to
-#   trigger                - what causes the transition
-#   actor                  - customer | system | operator
-#   prerequisites          - conditions that must hold before transition
-#   effects                - capacity / production_manifest / revenue notes
-#   requires_operator_action - true if a human (Rania) must act
-#   automatable             - true if this could reasonably run without a
-#                              human once rules are locked (does not imply
-#                              it does; no automation is built here)
-# -----------------------------------------------------------------------------
-transitions:
+reason_code_catalog:
+  # Attached to CANCELLED (and, where relevant, EXPIRED) to preserve the
+  # evidentiary distinctions the original design tried to capture as
+  # separate states, without bloating the lifecycle state set.
+  - code: customer_cancelled
+  - code: loumies_cancelled
+  - code: qualification_declined
+    note: "LOUMIES determined at QUALIFICATION it cannot/will not service the request."
+  - code: procurement_declined
+    note: "Institution's own procurement process did not authorize the purchase."
+  - code: quote_window_expired
+    note: "Use with lifecycle EXPIRED, not CANCELLED — no party affirmatively declined."
+  - code: hold_expired
+    note: "Use with lifecycle EXPIRED — checkout capacity hold lapsed before payment completed."
+  - code: cutoff_passed
+    note: "Use with lifecycle EXPIRED — preorder cutoff passed before order reached CONFIRMED."
+  - code: unresolved_operational_exception
+    note: "Use with lifecycle CANCELLED — an EXCEPTION could not be resolved in the order's favor."
+  - code: fulfillment_exception_unresolved
+    note: "Use with lifecycle CANCELLED — a FULFILLMENT_EXCEPTION could not be resolved."
 
-  - id: T01
-    from: DRAFT
-    to: SUBMITTED
-    applicable_order_types: [scheduled_preorder, same_day]
-    trigger: "Customer submits cart"
-    actor: customer
-    prerequisites:
-      - "Selected date is within cutoff and has available date capacity"
-      - "Selected items have available item capacity"
-    effects:
-      capacity: "none (availability re-checked, not decremented)"
-      production_manifest: "not eligible"
-      revenue: "not counted"
-    requires_operator_action: false
-    automatable: true
-
-  - id: T02
-    from: SUBMITTED
-    to: PAYMENT_PENDING
-    applicable_order_types: [scheduled_preorder, same_day]
-    trigger: "Payment/checkout attempt initiated"
-    actor: system
-    prerequisites: ["Order is SUBMITTED"]
-    effects: {capacity: none, production_manifest: "not eligible", revenue: "not counted"}
-    requires_operator_action: false
-    automatable: true
-
-  - id: T03
-    from: PAYMENT_PENDING
-    to: PAYMENT_FAILED
-    applicable_order_types: [all]
-    trigger: "Payment/deposit attempt unsuccessful"
-    actor: system
-    prerequisites: []
-    effects:
-      capacity: "none — must NOT be decremented"
-      production_manifest: "must NOT appear"
-      revenue: "not counted"
-    requires_operator_action: false
-    automatable: true
-
-  - id: T04
-    from: PAYMENT_FAILED
-    to: PAYMENT_PENDING
-    applicable_order_types: [all]
-    trigger: "Customer retries payment"
-    actor: customer
-    prerequisites: ["Date/item capacity re-validated (may have changed since first attempt)"]
-    effects: {capacity: none, production_manifest: "not eligible", revenue: "not counted"}
-    requires_operator_action: false
-    automatable: true
-
-  - id: T05
-    from: PAYMENT_PENDING
+lifecycle_transitions:
+  - id: L01
+    from: [DRAFT]
     to: CONFIRMED
     applicable_order_types: [scheduled_preorder, same_day]
-    trigger: "Payment succeeds, no exception"
+    trigger: "Checkout completes: capacity hold atomically converts and this order type's payment gate is satisfied (see gates.to_CONFIRMED)"
     actor: system
-    prerequisites:
-      - "Date/item capacity still available at moment of confirmation"
-    effects:
-      capacity: "decremented exactly once, here"
-      production_manifest: "now eligible"
-      revenue: "counted as confirmed"
     requires_operator_action: false
-    automatable: true
 
-  - id: T06
-    from: PAYMENT_PENDING
-    to: EXCEPTION_HOLD
-    applicable_order_types: [all]
-    trigger: "Payment succeeds but an operational exception is detected (e.g., capacity conflict, data issue)"
-    actor: system
-    prerequisites: []
-    effects:
-      capacity: "not decremented until exception resolved"
-      production_manifest: "not eligible while held"
-      revenue: "not counted while held"
-    requires_operator_action: true
-    automatable: false
-
-  - id: T07
-    from: EXCEPTION_HOLD
-    to: CONFIRMED
-    applicable_order_types: [all]
-    trigger: "Operator resolves exception in the order's favor"
-    actor: operator
-    prerequisites: ["Capacity re-validated"]
-    effects: {capacity: "decremented here if not already", production_manifest: "now eligible", revenue: "counted as confirmed"}
-    requires_operator_action: true
-    automatable: false
-
-  - id: T08
-    from: EXCEPTION_HOLD
-    to: CANCELLED_BY_LOUMIES
-    applicable_order_types: [all]
-    trigger: "Operator cannot resolve exception; order cannot proceed"
-    actor: operator
-    prerequisites: ["Cancellation reason recorded"]
-    effects: {capacity: "released if previously held", production_manifest: "removed if present", revenue: "reversed if previously counted"}
-    requires_operator_action: true
-    automatable: false
-
-  - id: T09
-    from: INQUIRY
-    to: QUALIFICATION_IN_PROGRESS
+  - id: L02
+    from: [DRAFT, none]
+    to: INQUIRY
     applicable_order_types: [group_catering, institutional]
-    trigger: "Operator begins review of inquiry"
-    actor: operator
-    prerequisites: []
-    effects: {capacity: none, production_manifest: "not eligible", revenue: "not counted"}
-    requires_operator_action: true
-    automatable: false
+    trigger: "Initial contact/request captured"
+    actor: customer
+    requires_operator_action: false
 
-  - id: T10
-    from: QUALIFICATION_IN_PROGRESS
-    to: QUALIFICATION_DECLINED
+  - id: L03
+    from: [INQUIRY]
+    to: QUALIFICATION
+    applicable_order_types: [group_catering, institutional]
+    trigger: "Operator begins feasibility review"
+    actor: operator
+    requires_operator_action: true
+
+  - id: L04
+    from: [INQUIRY, QUALIFICATION, none]
+    to: QUOTE_SENT
+    applicable_order_types: [group_catering, institutional]
+    trigger: >
+      Operator issues a quote/SOW. May be reached directly from an
+      initial complete request without separately instantiating INQUIRY
+      or QUALIFICATION as recorded waypoints — see the skippable flag on
+      those two states. A customer who submits a complete 40-person
+      request with an explicit price ask must not be forced through
+      artificial intermediate steps before LOUMIES can quote.
+    actor: operator
+    requires_operator_action: true
+
+  - id: L05
+    from: [QUALIFICATION]
+    to: CANCELLED
     applicable_order_types: [group_catering, institutional]
     trigger: "Operator determines request cannot/will not be serviced"
     actor: operator
-    prerequisites: ["Decline reason recorded"]
-    effects: {capacity: none, production_manifest: "not eligible", revenue: "not counted"}
     requires_operator_action: true
-    automatable: false
+    reason_code: qualification_declined
 
-  - id: T11
-    from: QUALIFICATION_IN_PROGRESS
-    to: QUOTE_REQUESTED
-    applicable_order_types: [group_catering, institutional]
-    trigger: "Request qualifies; customer/institution formally requests pricing"
-    actor: customer
-    prerequisites: []
-    effects: {capacity: none, production_manifest: "not eligible", revenue: "not counted"}
-    requires_operator_action: false
-    automatable: true
-
-  - id: T12
-    from: QUOTE_REQUESTED
-    to: QUOTE_SENT
-    applicable_order_types: [group_catering, institutional]
-    trigger: "Operator issues quote/SOW"
-    actor: operator
-    prerequisites: []
-    effects:
-      capacity: "none"
-      production_manifest: "NOT eligible — a quote is not booked demand"
-      revenue: "NOT counted — a quote is not booked demand"
-    requires_operator_action: true
-    automatable: false
-
-  - id: T13
-    from: QUOTE_SENT
-    to: QUOTE_EXPIRED
+  - id: L06
+    from: [QUOTE_SENT]
+    to: EXPIRED
     applicable_order_types: [group_catering, institutional]
     trigger: "Acceptance window lapses without response"
     actor: system
-    prerequisites: []
-    effects: {capacity: none, production_manifest: "not eligible", revenue: "not counted"}
     requires_operator_action: false
-    automatable: true
+    reason_code: quote_window_expired
 
-  - id: T14
-    from: QUOTE_SENT
+  - id: L07
+    from: [QUOTE_SENT]
     to: CUSTOMER_ACCEPTED
     applicable_order_types: [group_catering, institutional]
     trigger: "Customer/institution accepts quote terms (verbal or written, recorded)"
     actor: customer
-    prerequisites: ["Acceptance explicitly recorded, including whether verbal or written"]
-    effects: {capacity: none, production_manifest: "not eligible", revenue: "not counted"}
     requires_operator_action: false
-    automatable: false
 
-  - id: T15
-    from: CUSTOMER_ACCEPTED
-    to: PROCUREMENT_AUTHORIZATION_PENDING
-    applicable_order_types: [institutional]
-    trigger: "Institution's process requires formal PO/authorization beyond acceptance"
-    actor: system
-    prerequisites: ["Institution flagged as requiring formal authorization"]
-    effects: {capacity: none, production_manifest: "not eligible", revenue: "not counted"}
-    requires_operator_action: false
-    automatable: true
+  - id: L08
+    from: [CUSTOMER_ACCEPTED]
+    to: CONFIRMED
+    applicable_order_types: [group_catering, institutional]
+    trigger: "This order type's cross-dimension gate is satisfied (see gates.to_CONFIRMED)"
+    actor: operator
+    requires_operator_action: true
 
-  - id: T16
-    from: PROCUREMENT_AUTHORIZATION_PENDING
-    to: PROCUREMENT_AUTHORIZATION_DECLINED
+  - id: L09
+    from: [CUSTOMER_ACCEPTED]
+    to: CANCELLED
     applicable_order_types: [institutional]
     trigger: "Institution's procurement process does not authorize the purchase"
     actor: system
-    prerequisites: []
-    effects: {capacity: none, production_manifest: "not eligible", revenue: "not counted"}
     requires_operator_action: false
-    automatable: true
+    reason_code: procurement_declined
 
-  - id: T17
-    from: PROCUREMENT_AUTHORIZATION_PENDING
-    to: DEPOSIT_CONFIRMED
-    applicable_order_types: [institutional]
-    trigger: "Formal authorization received AND a deposit is required by this engagement"
-    actor: operator
-    prerequisites: ["PO or equivalent formally received and recorded"]
-    effects: {capacity: none, production_manifest: "not eligible", revenue: "not counted"}
-    requires_operator_action: true
-    automatable: false
-
-  - id: T18
-    from: PROCUREMENT_AUTHORIZATION_PENDING
-    to: CONFIRMED
-    applicable_order_types: [institutional]
-    trigger: "Formal authorization received AND no deposit is required by this engagement"
-    actor: operator
-    prerequisites: ["PO or equivalent formally received and recorded", "Date/item/labor capacity available"]
-    effects: {capacity: "decremented exactly once, here", production_manifest: "now eligible", revenue: "counted as confirmed"}
-    requires_operator_action: true
-    automatable: false
-
-  - id: T19
-    from: CUSTOMER_ACCEPTED
-    to: DEPOSIT_CONFIRMED
-    applicable_order_types: [group_catering]
-    trigger: "Customer acceptance recorded AND a deposit is required (institutional handled via T15-T18)"
-    actor: operator
-    prerequisites: ["Deposit received and recorded, if required"]
-    effects: {capacity: none, production_manifest: "not eligible", revenue: "not counted"}
-    requires_operator_action: true
-    automatable: false
-
-  - id: T20
-    from: CUSTOMER_ACCEPTED
-    to: CONFIRMED
-    applicable_order_types: [group_catering]
-    trigger: "Customer acceptance recorded AND no deposit is required for this booking"
-    actor: operator
-    prerequisites: ["Date/item/labor capacity available"]
-    effects: {capacity: "decremented exactly once, here", production_manifest: "now eligible", revenue: "counted as confirmed"}
-    requires_operator_action: true
-    automatable: false
-
-  - id: T21
-    from: DEPOSIT_CONFIRMED
-    to: CONFIRMED
-    applicable_order_types: [group_catering, institutional]
-    trigger: "Deposit reconciled; booking finalized"
-    actor: operator
-    prerequisites: ["Date/item/labor capacity available"]
-    effects: {capacity: "decremented exactly once, here", production_manifest: "now eligible", revenue: "counted as confirmed"}
-    requires_operator_action: true
-    automatable: false
-
-  - id: T22
-    from: CONFIRMED
+  - id: L10
+    from: [CONFIRMED]
     to: PRODUCTION_COMMITTED
     applicable_order_types: [all]
-    trigger: "Production manifest generated for the order's operating date (post-cutoff)"
+    trigger: "Order is admitted into the active production manifest for its operating date/cycle"
     actor: system
-    prerequisites: ["Order is CONFIRMED and not cancelled/expired"]
-    effects: {capacity: "already decremented; unchanged here", production_manifest: "order included", revenue: "remains counted as confirmed"}
     requires_operator_action: false
-    automatable: true
 
-  - id: T23
-    from: PRODUCTION_COMMITTED
-    to: READY_FOR_FULFILLMENT
-    applicable_order_types: [all]
-    trigger: "Production for this order is complete"
-    actor: operator
-    prerequisites: []
-    effects: {capacity: none, production_manifest: "remains included", revenue: "unchanged"}
-    requires_operator_action: true
-    automatable: false
-
-  - id: T24
-    from: READY_FOR_FULFILLMENT
-    to: FULFILLED
-    applicable_order_types: [all]
-    trigger: "Pickup or delivery completed"
-    actor: operator
-    prerequisites: []
-    effects: {capacity: none, production_manifest: "remains included", revenue: "unchanged"}
-    requires_operator_action: true
-    automatable: false
-
-  - id: T25
-    from: READY_FOR_FULFILLMENT
-    to: FULFILLMENT_EXCEPTION
-    applicable_order_types: [all]
-    trigger: "Pickup/delivery attempted but failed (no-show, failed delivery, etc.)"
-    actor: operator
-    prerequisites: ["Exception reason recorded"]
-    effects: {capacity: none, production_manifest: "remains included, flagged", revenue: "unchanged pending resolution"}
-    requires_operator_action: true
-    automatable: false
-
-  - id: T26
-    from: FULFILLMENT_EXCEPTION
-    to: FULFILLED
-    applicable_order_types: [all]
-    trigger: "Operator resolves exception (e.g., redelivery/rescheduled pickup succeeds)"
-    actor: operator
-    prerequisites: []
-    effects: {capacity: none, production_manifest: "remains included", revenue: "unchanged"}
-    requires_operator_action: true
-    automatable: false
-
-  - id: T27
-    from: FULFILLMENT_EXCEPTION
-    to: CANCELLED_BY_LOUMIES
-    applicable_order_types: [all]
-    trigger: "Fulfillment exception cannot be resolved"
-    actor: operator
-    prerequisites: ["Cancellation reason recorded"]
-    effects: {capacity: "released", production_manifest: "removed", revenue: "reversed"}
-    requires_operator_action: true
-    automatable: false
-
-  - id: T28
-    from: FULFILLED
-    to: INVOICED
-    applicable_order_types: [group_catering, institutional]
-    trigger: "Invoice issued for balance due"
-    actor: operator
-    prerequisites: ["Fulfilled AND balance outstanding"]
-    effects: {capacity: none, production_manifest: "remains included", revenue: "unchanged"}
-    requires_operator_action: true
-    automatable: false
-
-  - id: T29
-    from: FULFILLED
-    to: PAID
-    applicable_order_types: [scheduled_preorder, same_day]
-    trigger: "Payment already collected at confirmation is reconciled as final"
-    actor: system
-    prerequisites: []
-    effects: {capacity: none, production_manifest: "remains included", revenue: "unchanged"}
-    requires_operator_action: false
-    automatable: true
-
-  - id: T30
-    from: INVOICED
-    to: PAID
-    applicable_order_types: [group_catering, institutional]
-    trigger: "Invoice payment received"
-    actor: operator
-    prerequisites: []
-    effects: {capacity: none, production_manifest: "remains included", revenue: "unchanged"}
-    requires_operator_action: true
-    automatable: false
-
-  - id: T31
-    from: PAID
+  - id: L11
+    from: [PRODUCTION_COMMITTED]
     to: CLOSED
     applicable_order_types: [all]
-    trigger: "No outstanding obligation remains"
+    trigger: "Cross-dimension gate to_CLOSED satisfied (fulfilled + paid/settled + procurement resolved)"
     actor: system
-    prerequisites: ["FULFILLED (or resolved FULFILLMENT_EXCEPTION) AND PAID"]
-    effects: {capacity: none, production_manifest: "remains included, final", revenue: "final"}
     requires_operator_action: false
-    automatable: true
 
-  - id: T32
-    from: [DRAFT, INQUIRY, QUALIFICATION_IN_PROGRESS, QUOTE_REQUESTED, QUOTE_SENT,
-           CUSTOMER_ACCEPTED, PROCUREMENT_AUTHORIZATION_PENDING, SUBMITTED,
-           PAYMENT_PENDING, DEPOSIT_CONFIRMED, CONFIRMED, PRODUCTION_COMMITTED]
-    to: CANCELLED_BY_CUSTOMER
+  - id: L12
+    from: [DRAFT, INQUIRY, QUALIFICATION, QUOTE_SENT, CUSTOMER_ACCEPTED, CONFIRMED, PRODUCTION_COMMITTED, EXCEPTION]
+    to: EXCEPTION
     applicable_order_types: [all]
-    trigger: "Customer requests cancellation"
-    actor: customer
-    prerequisites: ["Cancellation reason recorded"]
-    effects:
-      capacity: "released if this order had previously decremented capacity (CONFIRMED or later); no-op otherwise"
-      production_manifest: "removed if previously included"
-      revenue: "reversed if previously counted"
+    trigger: "Lifecycle progression cannot continue without operator judgment"
+    actor: system
     requires_operator_action: false
-    automatable: true
 
-  - id: T33
-    from: [INQUIRY, QUALIFICATION_IN_PROGRESS, QUOTE_REQUESTED, QUOTE_SENT,
-           CUSTOMER_ACCEPTED, PROCUREMENT_AUTHORIZATION_PENDING, SUBMITTED,
-           PAYMENT_PENDING, DEPOSIT_CONFIRMED, CONFIRMED, PRODUCTION_COMMITTED,
-           READY_FOR_FULFILLMENT]
-    to: CANCELLED_BY_LOUMIES
+  - id: L13
+    from: [EXCEPTION]
+    to: [CONFIRMED, PRODUCTION_COMMITTED, CUSTOMER_ACCEPTED, QUOTE_SENT]
     applicable_order_types: [all]
-    trigger: "LOUMIES must cancel (capacity conflict, operational necessity, date closure, etc.)"
+    trigger: "Operator resolves exception in the order's favor; order resumes at the state it would otherwise have reached"
     actor: operator
-    prerequisites: ["Cancellation reason recorded"]
-    effects:
-      capacity: "released if this order had previously decremented capacity; no-op otherwise"
-      production_manifest: "removed if previously included"
-      revenue: "reversed if previously counted"
     requires_operator_action: true
-    automatable: false
 
-  - id: T34
-    from: [DRAFT, SUBMITTED, PAYMENT_PENDING]
+  - id: L14
+    from: [EXCEPTION]
+    to: CANCELLED
+    applicable_order_types: [all]
+    trigger: "Operator cannot resolve exception; order cannot proceed"
+    actor: operator
+    requires_operator_action: true
+    reason_code: unresolved_operational_exception
+
+  - id: L15
+    from: [DRAFT]
     to: EXPIRED
     applicable_order_types: [scheduled_preorder, same_day]
-    trigger: "Cutoff passes before order reaches CONFIRMED"
+    trigger: "Preorder cutoff passes, or the order's capacity_hold reaches hold_state EXPIRED, before order reaches CONFIRMED"
     actor: system
-    prerequisites: []
-    effects: {capacity: "released if any was tentatively held; none decremented at this stage in the normal flow", production_manifest: "not eligible", revenue: "not counted"}
     requires_operator_action: false
-    automatable: true
+    reason_code: [cutoff_passed, hold_expired]
 
+  - id: L16
+    from: [DRAFT, INQUIRY, QUALIFICATION, QUOTE_SENT, CUSTOMER_ACCEPTED, CONFIRMED, PRODUCTION_COMMITTED]
+    to: CANCELLED
+    applicable_order_types: [all]
+    trigger: "Customer or LOUMIES cancels, with reason recorded"
+    actor: [customer, operator]
+    requires_operator_action: "true when operator-initiated; false when customer-initiated"
+    reason_code: [customer_cancelled, loumies_cancelled]
+
+  - id: L17
+    from: [PRODUCTION_COMMITTED]
+    to: CONFIRMED
+    applicable_order_types: [all]
+    trigger: >
+      Order is removed from the active production manifest because it
+      legitimately changed or is being reconsidered before production
+      begins, without being cancelled outright. The active manifest
+      regenerates to exclude it; a prior manifest snapshot, if retained,
+      is not rewritten.
+    actor: operator
+    requires_operator_action: true
+
+# =============================================================================
+# DIMENSION B — PAYMENT / SETTLEMENT STATUS
+# =============================================================================
+# Independent of lifecycle. No refund/deposit/cutoff POLICY is defined here
+# — only the states required to represent whatever policy is later decided
+# (see LOUMIES_ORDER_OPEN_DECISIONS_V0.md).
 # -----------------------------------------------------------------------------
-# GUARDRAILS — invalid transitions stated explicitly, not left implicit
+payment_states:
+  - id: NOT_REQUIRED
+    label: "Not required"
+    description: "This order does not require payment through this dimension (e.g., a fully comped or non-monetary arrangement, if ever used)."
+    applicable_order_types: [all]
+  - id: NOT_STARTED
+    label: "Not started"
+    description: "No payment attempt has occurred yet."
+    applicable_order_types: [all]
+  - id: PAYMENT_PENDING
+    label: "Payment pending"
+    description: "A payment or deposit attempt is in progress; outcome not yet known."
+    applicable_order_types: [all]
+  - id: PAYMENT_FAILED
+    label: "Payment failed"
+    description: "Most recent payment/deposit attempt was unsuccessful. Does not by itself change lifecycle status."
+    applicable_order_types: [all]
+  - id: DEPOSIT_RECEIVED
+    label: "Deposit received"
+    description: "A partial payment has been received; balance outstanding. Deposit requirement/amount is OPEN per order type (see open decisions)."
+    applicable_order_types: [group_catering, institutional]
+  - id: PAID_IN_FULL
+    label: "Paid in full"
+    description: "Full payment has been reconciled."
+    applicable_order_types: [all]
+  - id: INVOICED_OUTSTANDING
+    label: "Invoiced / balance outstanding"
+    description: >
+      An invoice has been issued (typically post-fulfillment for
+      institutional, optionally group/catering) and payment has not yet
+      been received. A FULFILLED order may sit here for a legitimate
+      period — this is not an error state.
+    applicable_order_types: [group_catering, institutional]
+  - id: REFUND_OR_REVERSAL_PENDING
+    label: "Refund/reversal pending"
+    description: "A refund or reversal has been initiated but not completed. Policy for when this applies is OPEN — the state exists so it can be represented once policy is set."
+    applicable_order_types: [all]
+  - id: REFUNDED_OR_REVERSED
+    label: "Refunded/reversed"
+    description: "A refund or reversal has completed, in full or in part (amount tracked on the order record, not modeled as a separate state)."
+    applicable_order_types: [all]
+
+payment_transitions:
+  - from: NOT_STARTED
+    to: PAYMENT_PENDING
+    trigger: "Payment/deposit attempt initiated"
+  - from: PAYMENT_PENDING
+    to: PAYMENT_FAILED
+    trigger: "Attempt unsuccessful"
+  - from: PAYMENT_FAILED
+    to: PAYMENT_PENDING
+    trigger: "Customer retries"
+  - from: PAYMENT_PENDING
+    to: DEPOSIT_RECEIVED
+    trigger: "Deposit-only attempt succeeds (group/catering, institutional)"
+  - from: PAYMENT_PENDING
+    to: PAID_IN_FULL
+    trigger: "Full-payment attempt succeeds"
+  - from: DEPOSIT_RECEIVED
+    to: PAID_IN_FULL
+    trigger: "Balance payment received"
+  - from: [PAID_IN_FULL, DEPOSIT_RECEIVED, NOT_REQUIRED]
+    to: INVOICED_OUTSTANDING
+    trigger: "Institutional/catering invoice issued for a balance not yet covered by payments received (e.g., post-fulfillment billing)"
+  - from: INVOICED_OUTSTANDING
+    to: PAID_IN_FULL
+    trigger: "Invoice paid"
+  - from: [PAID_IN_FULL, DEPOSIT_RECEIVED, INVOICED_OUTSTANDING]
+    to: REFUND_OR_REVERSAL_PENDING
+    trigger: "Refund/reversal initiated (policy OPEN)"
+  - from: REFUND_OR_REVERSAL_PENDING
+    to: REFUNDED_OR_REVERSED
+    trigger: "Refund/reversal completes"
+
+canonical_examples:
+  - name: "Prepaid scheduled preorder (Case 2)"
+    description: >
+      Customer orders Thursday food on Wednesday; payment succeeds at
+      checkout. Before Thursday's fulfillment: lifecycle=CONFIRMED,
+      payment=PAID_IN_FULL, fulfillment=NOT_READY or READY. Payment
+      reaching PAID_IN_FULL is what the hold-conversion (see
+      capacity_hold section) is gated on for this order type — it does
+      NOT wait until after fulfillment.
+  - name: "Institutional invoiced, unpaid, but fulfilled (Case 4)"
+    description: >
+      Order is authorized and fulfilled. lifecycle=PRODUCTION_COMMITTED
+      (not yet CLOSED, because payment is not settled), fulfillment=
+      FULFILLED, payment=INVOICED_OUTSTANDING, procurement=AUTHORIZED.
+      No contradiction — CLOSED is gated on payment reaching
+      PAID_IN_FULL (see gates.to_CLOSED).
+
+# =============================================================================
+# DIMENSION C — PROCUREMENT STATUS
+# =============================================================================
+# Independent institutional-focused dimension. Whether a given counterparty
+# requires this at all is per-counterparty and is never generalized.
 # -----------------------------------------------------------------------------
+procurement_states:
+  - id: NOT_APPLICABLE
+    label: "Not applicable"
+    description: "Order type is not institutional; this dimension is inert."
+    applicable_order_types: [scheduled_preorder, same_day, group_catering]
+  - id: NOT_REQUIRED
+    label: "Not required"
+    description: "This specific institutional counterparty's process does not require formal PO/authorization; written or verbal acceptance is sufficient for THIS counterparty (never assumed by default for institutions generally)."
+    applicable_order_types: [institutional]
+  - id: PENDING
+    label: "Pending"
+    description: "Formal authorization (PO or equivalent) has been requested/is expected but not yet received."
+    applicable_order_types: [institutional]
+  - id: AUTHORIZED
+    label: "Authorized"
+    description: "Formal authorization (PO or equivalent) has been received and recorded. This is the clean affirmative state the original design omitted."
+    applicable_order_types: [institutional]
+  - id: DECLINED
+    label: "Declined"
+    description: "The institution's own procurement process did not authorize the purchase."
+    applicable_order_types: [institutional]
+
+procurement_transitions:
+  - from: null
+    to: [NOT_APPLICABLE, NOT_REQUIRED, PENDING]
+    trigger: "Order type/counterparty determined at intake or qualification"
+  - from: PENDING
+    to: AUTHORIZED
+    trigger: "PO or equivalent formally received and recorded"
+  - from: PENDING
+    to: DECLINED
+    trigger: "Institution's process does not authorize the purchase"
+
+canonical_example:
+  name: "Cornell (Case 3)"
+  description: >
+    Department accepts a quote (lifecycle=CUSTOMER_ACCEPTED) but the
+    required PO has not arrived: procurement=PENDING. Lifecycle MUST NOT
+    reach CONFIRMED or PRODUCTION_COMMITTED while procurement=PENDING
+    (see gates.to_CONFIRMED). After the PO arrives, procurement=AUTHORIZED,
+    and only then may lifecycle cross L08 into CONFIRMED.
+
+# =============================================================================
+# DIMENSION D — FULFILLMENT STATUS
+# =============================================================================
+# Independent of lifecycle and payment. Pickup vs. delivery is a separate
+# FULFILLMENT METHOD field on the order record (see
+# LOUMIES_ORDER_INFRASTRUCTURE_V0.md §8), never a status value here.
+# -----------------------------------------------------------------------------
+fulfillment_states:
+  - id: NOT_READY
+    label: "Not ready"
+    description: "Production for this order is not yet complete."
+    applicable_order_types: [all]
+  - id: READY
+    label: "Ready"
+    description: "Production complete; awaiting pickup or delivery."
+    applicable_order_types: [all]
+  - id: FULFILLED
+    label: "Fulfilled"
+    description: "Pickup or delivery completed successfully."
+    applicable_order_types: [all]
+  - id: FULFILLMENT_EXCEPTION
+    label: "Fulfillment exception"
+    description: "Pickup/delivery was attempted but failed (no-show, failed delivery attempt, etc.). Flagged for operator review."
+    applicable_order_types: [all]
+
+fulfillment_transitions:
+  - from: NOT_READY
+    to: READY
+    trigger: "Production for this order is complete"
+  - from: READY
+    to: FULFILLED
+    trigger: "Pickup or delivery completed"
+  - from: READY
+    to: FULFILLMENT_EXCEPTION
+    trigger: "Pickup/delivery attempted but failed"
+  - from: FULFILLMENT_EXCEPTION
+    to: FULFILLED
+    trigger: "Operator resolves exception (e.g., redelivery/rescheduled pickup succeeds)"
+  - from: FULFILLMENT_EXCEPTION
+    to: null
+    trigger: "Operator cannot resolve exception; escalates to lifecycle CANCELLED via reason_code fulfillment_exception_unresolved"
+
+# =============================================================================
+# CROSS-DIMENSION GATES
+# =============================================================================
+# The prerequisites a lifecycle transition checks against the other three
+# dimensions. This is where the four dimensions interact without being
+# collapsed back into one sequence.
+# -----------------------------------------------------------------------------
+gates:
+
+  to_CONFIRMED:
+    description: >
+      An order may cross into lifecycle CONFIRMED only when ALL of the
+      following hold. This is the single gate that prevents inquiry-stage
+      or quote-stage demand, unauthorized institutional demand, or
+      unresolved payment from ever being counted as booked.
+    conditions:
+      - "This order type's required payment condition is satisfied in payment_status (e.g., PAID_IN_FULL for direct consumer checkout per the canonical example; DEPOSIT_RECEIVED or PAID_IN_FULL where a deposit-only booking is permitted for group/catering — exact required level per channel is CONFIGURABLE/OPEN, see decision register)."
+      - "procurement_status is AUTHORIZED, NOT_REQUIRED, or NOT_APPLICABLE — never PENDING or DECLINED."
+      - "For group_catering/institutional: lifecycle has passed through CUSTOMER_ACCEPTED (acceptance recorded, verbal or written)."
+      - "For scheduled_preorder/same_day: the checkout capacity hold for this order has ACTIVE status and is being atomically converted in the same operation (see capacity_hold section) — capacity is never decremented before this gate and never decremented twice."
+
+  to_PRODUCTION_COMMITTED:
+    description: "An order may be admitted to the active production manifest only when:"
+    conditions:
+      - "lifecycle_status = CONFIRMED"
+      - "No open EXCEPTION on the order"
+
+  to_CLOSED:
+    description: "An order may close only when:"
+    conditions:
+      - "fulfillment_status = FULFILLED (or a FULFILLMENT_EXCEPTION that has itself been resolved to FULFILLED)"
+      - "payment_status = PAID_IN_FULL, or NOT_REQUIRED with that explicitly accepted by the operator"
+      - "procurement_status is AUTHORIZED, NOT_REQUIRED, or NOT_APPLICABLE"
+
+# =============================================================================
+# CAPACITY HOLD — checkout-race correction
+# =============================================================================
+# Applies to scheduled_preorder and same_day order types at checkout. Fixes
+# the oversell race where two customers could both pay for the same final
+# unit before the system discovers only one existed. A hold is NOT confirmed
+# demand, NOT booked revenue, and NOT a production commitment — it is
+# capacity-control infrastructure with its own tiny lifecycle.
+# -----------------------------------------------------------------------------
+capacity_hold:
+  purpose: >
+    Prevent two simultaneous checkouts from both succeeding against the
+    same final unit of date/item/same-day capacity.
+  sequence: >
+    availability check -> temporary capacity hold created -> payment
+    attempt -> if payment succeeds, the hold is ATOMICALLY converted into
+    confirmed capacity in the same operation that crosses lifecycle
+    gate to_CONFIRMED -> if payment fails, the customer abandons
+    checkout, or the hold expires, the held capacity is released back to
+    its allocation pool.
+  hold_states:
+    - id: ACTIVE
+      description: "Hold is currently reserving one unit of date/item/same-day capacity against a specific in-progress checkout attempt."
+    - id: CONVERTED
+      description: "Hold was atomically converted into confirmed capacity at the moment its order crossed lifecycle gate to_CONFIRMED. Terminal for the hold; the capacity now lives in the CONFIRMED_CAPACITY layer (see capacity_model)."
+    - id: EXPIRED
+      description: "Hold's expiration window elapsed before payment completed. Terminal; capacity released to its allocation pool. Duration of the window is CONFIGURABLE / vendor-dependent — not set here."
+    - id: RELEASED
+      description: "Hold was explicitly released (payment failed, customer abandoned checkout, operator intervention). Terminal; capacity released to its allocation pool."
+  hold_transitions:
+    - from: null
+      to: ACTIVE
+      trigger: "Customer begins checkout against an available unit"
+    - from: ACTIVE
+      to: CONVERTED
+      trigger: "Payment succeeds; atomic with lifecycle transition to CONFIRMED"
+    - from: ACTIVE
+      to: EXPIRED
+      trigger: "Hold window elapses without payment completing"
+    - from: ACTIVE
+      to: RELEASED
+      trigger: "Payment fails, customer abandons checkout, or operator intervenes"
+  guardrail: >
+    A hold is never itself reported as confirmed revenue, pipeline value,
+    or a production commitment. It exists purely to make the ACTIVE-hold
+    window race-safe: while one hold is ACTIVE against the last unit, no
+    second hold can be created against that same unit — the second
+    checkout attempt sees the unit as unavailable, not as a race to be won
+    at payment time. This closes Case 1 (last same-day item).
+  explicitly_out_of_scope:
+    - "Automatic capacity holds during group/catering or institutional inquiry/quote stages are NOT created by this specification."
+    - "An optional, manually operator-initiated date hold for a serious group/institutional prospect is a plausible future operating tool but is recorded as OPEN in the decision register, not implemented as a rule here."
+
+# =============================================================================
+# CAPACITY MODEL — five layers, reallocatable pools
+# =============================================================================
+# See LOUMIES_ORDER_INFRASTRUCTURE_V0.md §10 for narrative. This section is
+# the formal cross-reference for how the layers relate and how pools can be
+# reallocated without silent bleed or double counting.
+# -----------------------------------------------------------------------------
+capacity_layers:
+  - id: PHYSICAL_CAPACITY
+    description: "What production can actually support for a given date/item/labor-sensitive category. Ceiling on everything below. Not calculated in this document."
+  - id: SELLABLE_CAPACITY
+    description: >
+      How much of physical capacity Rania chooses to expose for sale.
+      May be, and by default should be assumed to be, LESS than physical
+      capacity — the system must never automatically expose all
+      physically possible production. Operator-set.
+  - id: ALLOCATED_CAPACITY
+    description: >
+      How sellable capacity is divided among pools (currently:
+      scheduled_preorder pool, same_day pool; group_catering and
+      institutional bookings typically consume confirmed capacity
+      directly rather than through a speculative pool, since they are
+      individually reviewed — see reallocation note below for whether a
+      pool model applies to them). Sum of all pools' allocated capacity
+      must never exceed SELLABLE_CAPACITY for that date/item/category.
+  - id: TEMPORARILY_HELD_CAPACITY
+    description: "Units currently reserved by an ACTIVE capacity_hold (see above), drawn from a pool's allocated-but-unconfirmed remainder."
+  - id: CONFIRMED_CAPACITY
+    description: "Units consumed by orders whose lifecycle has reached CONFIRMED (or later). This is what feeds the production manifest."
+
+pool_reallocation:
+  principle: >
+    Scheduled-preorder allocation and same-day allocation must be
+    separately identifiable and accounted for, and protected against
+    silent double-counting or silent bleed between pools. They are NOT
+    required to be permanently isolated from each other.
+  rules:
+    - "The operator may deliberately reallocate unconfirmed, unheld allocated capacity between the scheduled-preorder pool and the same-day pool at any time."
+    - "A reallocation is a discrete, auditable event: source pool, destination pool, quantity, date/item, timestamp, and operator identity are recorded."
+    - "Reallocation can only move capacity that is allocated-but-not-yet-held-or-confirmed. It can never revoke a TEMPORARILY_HELD or CONFIRMED unit out from under an in-progress or completed order."
+    - "Total allocated capacity across all pools for a given date/item/category must never exceed SELLABLE_CAPACITY, regardless of how many reallocations occur."
+  worked_example: >
+    Case 5. Rania allocates 10 portions to the same_day pool. Before
+    service she decides to expose only 5. The other 5 (assuming none are
+    held or confirmed) are reallocated back to unallocated sellable
+    capacity or directly to the scheduled_preorder pool via one recorded
+    reallocation event — they are not permanently trapped in the
+    same_day pool simply because that is where they started.
+
+# =============================================================================
+# GUARDRAILS
+# =============================================================================
 guardrails:
 
-  - rule: "No transition exists directly from INQUIRY, QUALIFICATION_IN_PROGRESS, QUOTE_REQUESTED, or QUOTE_SENT to CONFIRMED or PRODUCTION_COMMITTED."
+  - rule: "No lifecycle transition exists directly from INQUIRY, QUALIFICATION, or QUOTE_SENT to CONFIRMED or PRODUCTION_COMMITTED; CONFIRMED is reachable only via gates.to_CONFIRMED."
     prevents: "Inquiry-stage or quote-stage demand being counted as booked revenue or inflating the production manifest."
 
-  - rule: "PAYMENT_FAILED never transitions directly to CONFIRMED, PRODUCTION_COMMITTED, or any counts_as_confirmed_revenue state."
+  - rule: "payment_status = PAYMENT_FAILED never satisfies gates.to_CONFIRMED's payment condition."
     prevents: "A failed payment being treated as confirmed."
 
-  - rule: "For institutional orders where formal authorization is required, CUSTOMER_ACCEPTED never transitions directly to CONFIRMED — it must pass through PROCUREMENT_AUTHORIZATION_PENDING to a resolved authorization state."
-    prevents: "An institutional order being counted before required authorization; a verbal yes being mistaken for procurement authorization."
+  - rule: "For institutional orders, gates.to_CONFIRMED requires procurement_status = AUTHORIZED, NOT_REQUIRED, or NOT_APPLICABLE. CUSTOMER_ACCEPTED alone (procurement_status = PENDING) never satisfies the gate."
+    prevents: "An institutional order being counted before required authorization; a verbal/written yes being mistaken for procurement authorization."
 
-  - rule: "Any state that reaches CANCELLED_BY_CUSTOMER or CANCELLED_BY_LOUMIES is removed from the production manifest as part of the same transition (see effects on T32/T33), not as a separate later step."
-    prevents: "A cancelled order remaining on the production manifest."
+  - rule: "Lifecycle CANCELLED or EXPIRED removes the order from PRODUCTION_COMMITTED / the active manifest as part of the same transition, not a separate later step."
+    prevents: "A cancelled or expired order remaining on the production manifest."
 
-  - rule: "An item/date marked at zero remaining capacity (per LOUMIES_ORDER_INFRASTRUCTURE_V0.md §10) is removed from what is offered before T01/T02 can occur against it."
-    prevents: "Sold-out inventory continuing to accept orders."
+  - rule: "A unit with an ACTIVE capacity_hold or CONFIRMED_CAPACITY status is not offered as available to a second checkout attempt."
+    prevents: "Two customers both successfully purchasing the same final unit (Case 1)."
 
-  - rule: "Capacity decrement occurs on exactly one transition per order: entry into CONFIRMED (T05, T07, T18, T20, T21). No other transition decrements capacity."
+  - rule: "Capacity moves from ALLOCATED to CONFIRMED_CAPACITY exactly once per order: at the atomic hold-conversion that accompanies gate to_CONFIRMED (scheduled_preorder/same_day), or at the equivalent CONFIRMED transition for group_catering/institutional (L08). No other transition decrements confirmed capacity."
     prevents: "Capacity being decremented twice for one order."
 
-  - rule: "FULFILLED (T24/T26) is reachable only from READY_FOR_FULFILLMENT or FULFILLMENT_EXCEPTION, both of which are reachable only through PRODUCTION_COMMITTED, which is reachable only from CONFIRMED."
-    prevents: "An order being fulfilled without ever passing through a valid confirmed state."
+  - rule: "fulfillment_status = FULFILLED is reachable only from READY, which is reachable only once lifecycle has reached at least PRODUCTION_COMMITTED."
+    prevents: "An order being fulfilled without ever passing through a valid confirmed/production-committed lifecycle state."
 
-  - rule: "FULFILLED does not imply PAID. PAID is a separate transition (T28-T30) that may occur before, at, or after FULFILLED depending on order type (e.g., institutional invoicing occurs after fulfillment)."
-    prevents: "A fulfilled order being automatically assumed paid when payment may legitimately occur later."
+  - rule: "gates.to_CLOSED requires payment_status = PAID_IN_FULL (or accepted NOT_REQUIRED) independently of fulfillment_status; FULFILLED does not by itself satisfy the payment condition."
+    prevents: "A fulfilled order being automatically assumed paid when payment may legitimately occur later (institutional invoicing, Case 4)."
 
-# -----------------------------------------------------------------------------
-# EXCEPTION STATES — summary cross-reference
-# -----------------------------------------------------------------------------
-exception_states:
-  - state: PAYMENT_FAILED
-    meaning: "Payment/deposit attempt unsuccessful; order not confirmed."
-  - state: EXCEPTION_HOLD
-    meaning: "Order held for operator review after an unresolved operational conflict, regardless of order type or point in lifecycle."
-  - state: FULFILLMENT_EXCEPTION
-    meaning: "Pickup/delivery attempted but failed; requires operator resolution or cancellation."
-  - state: QUALIFICATION_DECLINED
-    meaning: "LOUMIES declined to service the inquiry (not an order-side failure)."
-  - state: PROCUREMENT_AUTHORIZATION_DECLINED
-    meaning: "Institution's own process did not authorize the purchase."
-  - state: QUOTE_EXPIRED
-    meaning: "Quote acceptance window lapsed without response."
+  - rule: "Reallocation between the scheduled_preorder and same_day pools may only move ALLOCATED (not TEMPORARILY_HELD or CONFIRMED) capacity, and total allocation may never exceed SELLABLE_CAPACITY."
+    prevents: "Silent bleed between pools, double counting, or overselling total sellable capacity through reallocation."
 
-# -----------------------------------------------------------------------------
-# CAPACITY & PRODUCTION-MANIFEST CROSS-REFERENCE (see narrative doc §10, §12)
-# -----------------------------------------------------------------------------
-capacity_and_manifest_notes:
-  decrement_point: "Entry into CONFIRMED, and only there."
-  release_points: "CANCELLED_BY_CUSTOMER, CANCELLED_BY_LOUMIES, and EXPIRED, each only if capacity had previously been decremented for that order."
-  manifest_inclusion_point: "Entry into PRODUCTION_COMMITTED, generated from the set of orders in CONFIRMED (or later, non-cancelled) states as of the relevant cutoff for that operating date."
-  manifest_exclusion_rule: "Any order that reaches a terminal_cancelled or terminal_other state is excluded from the manifest, including removal if it was already included."
+# =============================================================================
+# REPORTING CORRECTION — no single boolean stands in for financial truth
+# =============================================================================
+reporting_dimensions:
+  items:
+    - id: pipeline_value
+      definition: "Sum of order value where lifecycle is in {INQUIRY, QUALIFICATION, QUOTE_SENT, CUSTOMER_ACCEPTED} — i.e., not yet CONFIRMED. Never combined with booked revenue in one figure."
+    - id: confirmed_booked_revenue
+      definition: "Sum of order value where lifecycle >= CONFIRMED (CONFIRMED, PRODUCTION_COMMITTED, or CLOSED), regardless of payment_status."
+    - id: paid_revenue
+      definition: "Sum of order value where payment_status = PAID_IN_FULL, regardless of lifecycle or fulfillment_status."
+    - id: fulfilled_revenue
+      definition: "Sum of order value where fulfillment_status = FULFILLED, regardless of payment_status."
+    - id: outstanding_receivable
+      definition: "Sum of order value where payment_status = INVOICED_OUTSTANDING (or DEPOSIT_RECEIVED with a balance remaining)."
+    - id: cancelled_or_reversed_value
+      definition: "Sum of order value where lifecycle = CANCELLED, or payment_status = REFUNDED_OR_REVERSED, tracked separately from the above, never netted silently against them."
+    - id: production_commitments
+      definition: "Sum of quantities/value where lifecycle = PRODUCTION_COMMITTED as of a given moment — this is what the production manifest reflects."
+  guardrail: >
+    Case 8. A $2,000 quote (QUOTE_SENT, not accepted) contributes to
+    pipeline_value only. A $700 paid scheduled preorder (CONFIRMED,
+    PAID_IN_FULL) contributes to confirmed_booked_revenue and
+    paid_revenue. A $1,200 PO-authorized-but-unpaid institutional
+    booking (CONFIRMED, INVOICED_OUTSTANDING or NOT_STARTED pending
+    invoicing) contributes to confirmed_booked_revenue and
+    outstanding_receivable, not to paid_revenue. No single figure may
+    combine these without labeling which dimension it represents.
+
+# =============================================================================
+# PRODUCTION MANIFEST — live view, not a frozen historical record
+# =============================================================================
+production_manifest_model:
+  definition: >
+    The ACTIVE production manifest for an operating date is the current
+    set of orders with lifecycle = PRODUCTION_COMMITTED for that date,
+    summarized by product/quantity/pickup-delivery schedule/notes. It is
+    regenerated whenever the underlying set changes (an order is added
+    via L10, removed via L16/L17, or amended).
+  historical_retention: >
+    Prior snapshots of the manifest MAY be retained for audit purposes,
+    but the manifest an operator or kitchen actually works from is
+    always the current, regenerated ACTIVE version — never a stale
+    snapshot presented as current.
+  cancellation_before_production_case: >
+    Case 7. A validly confirmed order cancels (lifecycle -> CANCELLED)
+    before production begins. It is removed from PRODUCTION_COMMITTED
+    and the active manifest regenerates without it; its
+    CONFIRMED_CAPACITY is released back to its pool and becomes
+    available for deliberate resale where operationally appropriate
+    (subject to remaining lead time, per open decisions).
