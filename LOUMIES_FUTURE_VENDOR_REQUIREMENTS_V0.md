@@ -1,6 +1,6 @@
 # LOUMIES — Future Vendor-Neutral Requirements Checklist (V0, corrected)
 
-**Correction note (Rio adjudication pass):** this checklist is updated to reflect the corrected order-state architecture — orthogonal lifecycle/payment/procurement/fulfillment statuses, a temporary checkout capacity-hold mechanism, and reallocatable (not permanently isolated) scheduled-preorder/same-day pools. See §8, §12, §14, §17, and new §21–22 below, and the corresponding corrections in `LOUMIES_ORDER_INFRASTRUCTURE_V0.md` and `LOUMIES_ORDER_STATE_MODEL_V0.yaml`.
+**Correction note (Rio adjudication, two passes):** this checklist reflects (1) the orthogonal lifecycle/payment/procurement/fulfillment architecture, a temporary checkout capacity-hold mechanism, and reallocatable (not permanently isolated) scheduled-preorder/same-day pools; and (2) a final surgical patch adding `PAYMENT_NOT_YET_DUE` to the payment dimension (§8, §12, §14) and clarifying that the still-open third-day trigger and same-day settings never block Order #1 or other channels (§1, §5). See the corresponding corrections in `LOUMIES_ORDER_INFRASTRUCTURE_V0.md` and `LOUMIES_ORDER_STATE_MODEL_V0.yaml`.
 
 **Purpose:** Translate `LOUMIES_ORDER_INFRASTRUCTURE_V0.md` and `LOUMIES_ORDER_STATE_MODEL_V0.yaml` into a checklist that can be used to evaluate *any* future commerce/payment/ordering vendor against LOUMIES's own requirements.
 
@@ -18,6 +18,7 @@ Each item below is a capability requirement, phrased as "the system must be able
 - [ ] Support order modification pre-confirmation without corrupting capacity accounting.
 - [ ] Support a capacity-aware, non-silent modification path post-confirmation (or explicitly disallow modification post-confirmation, per §4/C2 of the open-decisions register, until that policy is set).
 - [ ] Represent lifecycle status (`CONFIRMED`, `PRODUCTION_COMMITTED`, etc.) independently of payment status — never infer one from the other (see §8 below).
+- [ ] Support opening and accepting orders on the two normal operating days independently of whether the conditional third day's activation trigger has been resolved — the conditional day's open status must never block launch or Order #1 on the two normal days.
 
 ## 2. Cutoff Control
 
@@ -49,6 +50,7 @@ Each item below is a capability requirement, phrased as "the system must be able
 - [ ] Support enabling same-day ordering only on operator-selected dates, not automatically on every operating day.
 - [ ] Support fulfillment-method eligibility (pickup/delivery) that can differ by date and by order type.
 - [ ] Support the same temporary capacity-hold mechanism at same-day checkout as scheduled preorder (see §21) — same-day is not exempt from the oversell-race correction.
+- [ ] Support same-day capacity being set to zero (fully OFF) for a date, or for the entire proof, **without impairing** scheduled-preorder, group/catering, or institutional order types in any way — same-day is optional for the proof, not a dependency for other channels.
 
 ## 6. Pickup
 
@@ -65,9 +67,10 @@ Each item below is a capability requirement, phrased as "the system must be able
 
 ## 8. Payment Capability — corrected: four orthogonal status dimensions
 
-- [ ] Support **lifecycle status** (`DRAFT`/`INQUIRY`/…/`CONFIRMED`/`PRODUCTION_COMMITTED`/…/`CLOSED`), **payment status** (`NOT_STARTED`/`PAYMENT_PENDING`/`PAYMENT_FAILED`/`DEPOSIT_RECEIVED`/`PAID_IN_FULL`/`INVOICED_OUTSTANDING`/refund states), **procurement status** (`NOT_APPLICABLE`/`NOT_REQUIRED`/`PENDING`/`AUTHORIZED`/`DECLINED`), and **fulfillment status** (`NOT_READY`/`READY`/`FULFILLED`/`FULFILLMENT_EXCEPTION`) as four independent fields on the order record — never inferring one from another.
+- [ ] Support **lifecycle status** (`DRAFT`/`INQUIRY`/…/`CONFIRMED`/`PRODUCTION_COMMITTED`/…/`CLOSED`), **payment status** (`NOT_STARTED`/`PAYMENT_NOT_YET_DUE`/`PAYMENT_PENDING`/`PAYMENT_FAILED`/`DEPOSIT_RECEIVED`/`PAID_IN_FULL`/`INVOICED_OUTSTANDING`/refund states), **procurement status** (`NOT_APPLICABLE`/`NOT_REQUIRED`/`PENDING`/`AUTHORIZED`/`DECLINED`), and **fulfillment status** (`NOT_READY`/`READY`/`FULFILLED`/`FULFILLMENT_EXCEPTION`) as four independent fields on the order record — never inferring one from another.
 - [ ] Support a scheduled-preorder order that is `lifecycle = CONFIRMED` and `payment = PAID_IN_FULL` at the same moment (payment required before confirmation for this order type), not only after fulfillment.
 - [ ] Support an institutional order that is `fulfillment = FULFILLED` while `payment = INVOICED_OUTSTANDING`, without treating this as an error state.
+- [ ] Support `payment = PAYMENT_NOT_YET_DUE` as **distinct from both `NOT_REQUIRED` and `INVOICED_OUTSTANDING`** — payment IS required, but is not yet due and no invoice/receivable currently exists. Support an institutional order reaching `lifecycle = CONFIRMED` with `procurement = AUTHORIZED` and `payment = PAYMENT_NOT_YET_DUE`, i.e. confirmed and authorized before any cash is collected, where the counterparty's approved payment terms permit it. Support the later transitions `PAYMENT_NOT_YET_DUE → INVOICED_OUTSTANDING → PAID_IN_FULL` as the order progresses. Never count `PAYMENT_NOT_YET_DUE` as paid revenue or as an outstanding receivable (see §14).
 - [ ] Support a payment-failure path that leaves the order's lifecycle short of `CONFIRMED`, non-capacity-consuming, and excluded from the production manifest.
 - [ ] Support deposit-based payment (partial now, balance later) for group/catering and institutional orders, without forcing full payment at booking for those order types.
 - [ ] Support invoicing as a distinct downstream step from fulfillment for institutional (and optionally group/catering) orders.
@@ -100,7 +103,7 @@ Each item below is a capability requirement, phrased as "the system must be able
 - [ ] Support a procurement-style workflow distinct from both cart checkout and standard catering: inquiry → quote/SOW → acceptance → procurement status → confirmed order → fulfillment → invoice → paid.
 - [ ] Support a **clean affirmative `AUTHORIZED` procurement status** (not merely the absence of a blocker) as distinct from customer acceptance, with the ability to require it before confirmation for counterparties that need it, and represent `NOT_REQUIRED` for counterparties that don't — **per counterparty, never a universal institutional default** (see open decision F1).
 - [ ] Support post-fulfillment invoicing with configurable payment terms (net terms placeholder — value not set here).
-- [ ] Prevent an order whose procurement status is `PENDING` or `DECLINED` from reaching `CONFIRMED` or `PRODUCTION_COMMITTED` under any circumstance, regardless of customer acceptance.
+- [ ] Prevent an order whose procurement status is `PENDING` or `DECLINED` from reaching `CONFIRMED` or `PRODUCTION_COMMITTED` under any circumstance, regardless of customer acceptance **or approved payment terms** — `PAYMENT_NOT_YET_DUE` never substitutes for or bypasses procurement authorization.
 
 ## 13. Exports
 
@@ -112,6 +115,7 @@ Each item below is a capability requirement, phrased as "the system must be able
 
 - [ ] Support reporting, as separate figures that are never silently combined into one "revenue" or "sales" number: **pipeline value** (lifecycle pre-`CONFIRMED`), **confirmed/booked revenue** (lifecycle ≥ `CONFIRMED`, regardless of payment), **paid revenue** (`payment = PAID_IN_FULL`, regardless of lifecycle/fulfillment), **fulfilled revenue** (`fulfillment = FULFILLED`, regardless of payment), **outstanding receivable** (`payment = INVOICED_OUTSTANDING` or a deposit with balance remaining), and **cancelled/reversed value**.
 - [ ] Support slicing each of the six figures above by order type/channel (scheduled preorder, same-day, group/catering, institutional).
+- [ ] Support `payment = PAYMENT_NOT_YET_DUE` counting toward confirmed/booked revenue but toward **neither** paid revenue **nor** outstanding receivable — booked, but not yet payable or invoiced (no seventh mandatory metric; a clarification of how the six figures treat this state).
 - [ ] Support reporting same-day sell-through (allocated vs. sold), unsold same-day inventory, and the effect of any deliberate operator reallocation between pools (see §22).
 - [ ] Support reporting cancellations, failed payments, and fulfillment failures as discrete, filterable event types, each with reason code and initiating party where applicable.
 - [ ] Support reporting revenue confirmed before vs. after preorder cutoff for a given date.

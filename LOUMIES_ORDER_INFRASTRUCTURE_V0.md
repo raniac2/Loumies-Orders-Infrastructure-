@@ -19,6 +19,11 @@ This version incorporates a Rio adjudication/correction pass against the wider L
 7. **Production manifest as a live view** — the active manifest regenerates when legitimate commitments change; it is not an irreversible historical record (§12).
 8. **Reporting correction** — pipeline, booked, paid, fulfilled, outstanding, and cancelled/reversed value are kept as separate reportable figures, never silently combined (§14).
 
+**Final surgical patch (this version) adds:**
+
+9. **Launch-blocking correction** — the still-open third-day activation trigger (A4) and the still-open same-day capacity/date/fulfillment settings (D1–D3) do not block Order #1 or the launch of the two normal (owner-locked) operating days, and do not block scheduled-preorder, group/catering, or institutional activation. They block only the conditional third day and the same-day channel/experiment, respectively (§2, §5).
+10. **`PAYMENT_NOT_YET_DUE`** — a fourth payment-status value representing a legitimately confirmed, procurement-authorized institutional (or approved pay-on-terms) order whose payment is required but not yet due, distinct from `NOT_REQUIRED` and from `INVOICED_OUTSTANDING` (§7, §9, §14).
+
 This document does not re-argue those items further in prose; each correction is reflected inline in the relevant section below and in the companion YAML/decision register.
 
 ---
@@ -70,7 +75,7 @@ The purpose is to let LOUMIES evaluate any future software/vendor against LOUMIE
 ### Still WORKING ASSUMPTION / OPEN
 
 - Production occurs from a **shared commercial-kitchen model**. **[WORKING ASSUMPTION]**
-- **The condition/threshold that justifies activating the conditional third day is [OPEN].** No numerical trigger is invented here — it is a judgment call for Rania, informed by demand signals as the proof runs.
+- **The condition/threshold that justifies activating the conditional third day is [OPEN].** No numerical trigger is invented here — it is a judgment call for Rania, informed by demand signals as the proof runs. **This open item blocks only the opening of the conditional third day — it does not block Order #1 or the launch of the two normal operating days**, which are owner-locked and independently activatable (see open decisions A4).
 - **Final proof menu: OPEN.**
 - **2026 selling prices: OPEN.**
 - **Technology/vendor selection: deliberately not yet decided** — out of scope for this document by design.
@@ -186,6 +191,12 @@ Scheduled-preorder allocation and same-day allocation must be **separately ident
 
 **Five same-day orders per operating day is one possible proof-test scenario, not a permanent capacity rule.** The architecture must support testing 0, 5, 10, or any other exposed quantity without changing the underlying model.
 
+### Same-day is optional for the proof — it is not a launch dependency
+
+Because same-day capacity may legitimately be set to zero, none of the still-open same-day settings (total capacity, which dates offer it, fulfillment eligibility — see open decisions D1–D3) are prerequisites for launching LOUMIES. **LOUMIES can accept Order #1, and operate scheduled-preorder, group/catering, and institutional order types, with same-day ordering fully switched off.** A future ordering system must support turning same-day fully OFF without impairing any other order type — this is a capability requirement, not merely a convenience.
+
+This does not remove same-day from the specification, does not make it owner-locked, and does not set a same-day quantity — same-day remains a real order type (§9 of the state model) with its own capacity mechanics; it is simply not required to be "on" for the proof to launch.
+
 ---
 
 ## 6. Order Flow — Group / Catering
@@ -272,6 +283,8 @@ The governing reference case: a department accepts a quote, but the required PO 
 
 Also note: fulfillment can complete before payment settles. An institutional order can legitimately be `fulfillment = FULFILLED` while `payment = INVOICED_OUTSTANDING` — this is not a contradiction, and the order does not close until payment is resolved (see §9, gate to `CLOSED`).
 
+**Confirmed before cash is collected — `PAYMENT_NOT_YET_DUE`.** Institutional procurement can also legitimately produce this sequence: acceptance recorded, required PO/authorization received, order is genuinely `CONFIRMED` — but under that counterparty's approved terms, payment is not yet due and no invoice yet exists. This is neither `NOT_REQUIRED` (payment *is* required) nor `INVOICED_OUTSTANDING` (no invoice exists yet). The payment dimension carries a distinct value, `PAYMENT_NOT_YET_DUE`, for exactly this state (see §9). It never substitutes for or bypasses procurement authorization — an order with `procurement = PENDING` cannot reach `CONFIRMED` regardless of its payment terms — and it is never counted as paid revenue or as an outstanding receivable (§14). Whether a given institutional order actually uses this state, versus requiring payment or a deposit at booking, is a per-counterparty term, not an assumption made here (see open decision C6).
+
 ---
 
 ## 8. Common Internal Order Model
@@ -319,7 +332,7 @@ The full formal state model is specified in the companion artifact **`LOUMIES_OR
 The original V0 modeled commercial lifecycle, payment, procurement, and fulfillment as a single, largely linear chain. That made it impossible to cleanly represent legitimate real states like "confirmed and paid, not yet fulfilled" or "fulfilled, invoiced, not yet paid." The corrected model treats every order record as carrying **four independent status dimensions**, plus a separate small entity for checkout capacity reservation:
 
 - **A — Lifecycle status**: `DRAFT` → (for catering/institutional: `INQUIRY` → `QUALIFICATION`, both skippable as distinct recorded steps → `QUOTE_SENT` → `CUSTOMER_ACCEPTED`) → `CONFIRMED` → `PRODUCTION_COMMITTED` → `CLOSED`, with `EXCEPTION`, `CANCELLED`, and `EXPIRED` reachable as needed. Tells you *how far the commercial/production story has progressed.*
-- **B — Payment/settlement status**: `NOT_REQUIRED` / `NOT_STARTED` / `PAYMENT_PENDING` / `PAYMENT_FAILED` / `DEPOSIT_RECEIVED` / `PAID_IN_FULL` / `INVOICED_OUTSTANDING` / `REFUND_OR_REVERSAL_PENDING` / `REFUNDED_OR_REVERSED`. Tells you *what has actually been paid*, independent of lifecycle.
+- **B — Payment/settlement status**: `NOT_REQUIRED` / `NOT_STARTED` / `PAYMENT_NOT_YET_DUE` / `PAYMENT_PENDING` / `PAYMENT_FAILED` / `DEPOSIT_RECEIVED` / `PAID_IN_FULL` / `INVOICED_OUTSTANDING` / `REFUND_OR_REVERSAL_PENDING` / `REFUNDED_OR_REVERSED`. Tells you *what has actually been paid*, independent of lifecycle. `PAYMENT_NOT_YET_DUE` (institutional/approved pay-on-terms only) represents payment that is required but not yet due under approved terms — booked, but not yet payable or invoiced (see §7).
 - **C — Procurement status** (institutional-focused): `NOT_APPLICABLE` / `NOT_REQUIRED` / `PENDING` / `AUTHORIZED` / `DECLINED`. Tells you *whether formal purchasing authorization exists*, independent of customer acceptance.
 - **D — Fulfillment status**: `NOT_READY` / `READY` / `FULFILLED` / `FULFILLMENT_EXCEPTION`. Tells you *whether the food actually reached the customer*, independent of payment.
 
@@ -507,7 +520,7 @@ No single number stands in for all financial truth. The system must be able to r
 - **Outstanding receivable** — orders with `payment = INVOICED_OUTSTANDING` (or a deposit received with balance remaining).
 - **Cancelled/reversed value** — orders at lifecycle `CANCELLED`, or refunded/reversed payments — tracked separately, never netted silently against the figures above.
 
-**Worked example:** a $2,000 quote not yet accepted is pipeline only. A $700 paid scheduled preorder is confirmed/booked revenue and paid revenue. A $1,200 PO-authorized-but-unpaid institutional booking is confirmed/booked revenue and outstanding receivable, not paid revenue. No report may combine these into one figure without labeling which dimension it represents.
+**Worked example:** a $2,000 quote not yet accepted is pipeline only. A $700 paid scheduled preorder is confirmed/booked revenue and paid revenue. A $1,200 PO-authorized institutional booking whose payment is not yet due under approved terms (`payment = PAYMENT_NOT_YET_DUE`) is confirmed/booked revenue only — **not** paid revenue, and **not** outstanding receivable until an actual invoice/receivable becomes due (payment status moves to `INVOICED_OUTSTANDING`). No report may combine these into one figure without labeling which dimension it represents. `PAYMENT_NOT_YET_DUE` does not create a seventh mandatory top-line metric — it is a clarification of how the existing six figures treat that payment state: booked, but not yet payable or invoiced.
 
 ### Additional event/data capture required
 

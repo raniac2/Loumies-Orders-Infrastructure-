@@ -22,6 +22,20 @@
 #   LOUMIES_ORDER_INFRASTRUCTURE_V0.md and LOUMIES_ORDER_OPEN_DECISIONS_V0.md
 #   for the corresponding narrative and governance corrections.
 #
+# CORRECTION LOG (final surgical patch):
+#   (1) A4 (third-day activation trigger) and D1-D3 (same-day capacity/
+#       date/fulfillment settings) do not block Order #1 or activation
+#       of scheduled preorder / group-catering / institutional — see the
+#       corresponding rows in LOUMIES_ORDER_OPEN_DECISIONS_V0.md. This is
+#       a decision-register/blocking-classification correction, not a
+#       structural change to this YAML.
+#   (2) Added payment_status = PAYMENT_NOT_YET_DUE (dimension B), its
+#       transitions, and an institutional branch on gates.to_CONFIRMED,
+#       to represent a legitimately confirmed, procurement-authorized
+#       institutional order whose payment is required but not yet due
+#       under approved terms — without ever bypassing procurement
+#       authorization or being counted as paid/outstanding revenue.
+#
 # Companion narrative: LOUMIES_ORDER_INFRASTRUCTURE_V0.md
 # Companion decision register: LOUMIES_ORDER_OPEN_DECISIONS_V0.md
 #
@@ -400,6 +414,21 @@ payment_states:
     label: "Not started"
     description: "No payment attempt has occurred yet."
     applicable_order_types: [all]
+  - id: PAYMENT_NOT_YET_DUE
+    label: "Payment not yet due"
+    description: >
+      Payment is contractually/operationally required for this order,
+      but under the applicable order/counterparty terms it is not yet
+      due, and no payable invoice/payment action is currently
+      outstanding. Distinct from NOT_REQUIRED (payment IS required here)
+      and from INVOICED_OUTSTANDING (no invoice/receivable exists yet).
+      Used primarily for institutional or other approved pay-on-terms
+      arrangements where confirmation is legitimate before cash is
+      collected. Whether a given order type/counterparty uses this state
+      is controlled entirely by that counterparty's/order's approved
+      terms — never assumed by default. Never counted as paid revenue or
+      as an outstanding receivable; see reporting_dimensions.
+    applicable_order_types: [group_catering, institutional]
   - id: PAYMENT_PENDING
     label: "Payment pending"
     description: "A payment or deposit attempt is in progress; outcome not yet known."
@@ -437,6 +466,14 @@ payment_transitions:
   - from: NOT_STARTED
     to: PAYMENT_PENDING
     trigger: "Payment/deposit attempt initiated"
+  - from: NOT_STARTED
+    to: PAYMENT_NOT_YET_DUE
+    trigger: >
+      Approved order/payment terms (institutional or other approved
+      pay-on-terms arrangement) establish that payment will legitimately
+      occur later, and no attempt is expected at this stage. Terms
+      themselves are counterparty/configuration decisions, not defined
+      here.
   - from: PAYMENT_PENDING
     to: PAYMENT_FAILED
     trigger: "Attempt unsuccessful"
@@ -455,6 +492,12 @@ payment_transitions:
   - from: [PAID_IN_FULL, DEPOSIT_RECEIVED, NOT_REQUIRED]
     to: INVOICED_OUTSTANDING
     trigger: "Institutional/catering invoice issued for a balance not yet covered by payments received (e.g., post-fulfillment billing)"
+  - from: PAYMENT_NOT_YET_DUE
+    to: INVOICED_OUTSTANDING
+    trigger: "An invoice becomes due/outstanding under the applicable terms (e.g., issued post-fulfillment) — invoice timing itself is a counterparty/configuration decision, not set here"
+  - from: PAYMENT_NOT_YET_DUE
+    to: PAID_IN_FULL
+    trigger: "Payment is made before reaching an invoiced/outstanding stage, for whatever legitimate reason (e.g., early payment)"
   - from: INVOICED_OUTSTANDING
     to: PAID_IN_FULL
     trigger: "Invoice paid"
@@ -481,6 +524,17 @@ canonical_examples:
       FULFILLED, payment=INVOICED_OUTSTANDING, procurement=AUTHORIZED.
       No contradiction — CLOSED is gated on payment reaching
       PAID_IN_FULL (see gates.to_CLOSED).
+  - name: "Institutional pay-on-terms, authorized and confirmed before service (Case C)"
+    description: >
+      Quote accepted; required PO received; approved order terms mean
+      payment is required but not yet due at booking. Before service:
+      lifecycle=CONFIRMED, procurement=AUTHORIZED,
+      payment=PAYMENT_NOT_YET_DUE, fulfillment=NOT_READY — a legitimate
+      combination (see gates.to_CONFIRMED's institutional branch). This
+      is NOT counted as cash received (see reporting_dimensions).
+      After service, once invoiced: fulfillment=FULFILLED,
+      payment=INVOICED_OUTSTANDING. After payment: payment=PAID_IN_FULL.
+      Only then may the order satisfy gates.to_CLOSED.
 
 # =============================================================================
 # DIMENSION C — PROCUREMENT STATUS
@@ -586,12 +640,36 @@ gates:
       An order may cross into lifecycle CONFIRMED only when ALL of the
       following hold. This is the single gate that prevents inquiry-stage
       or quote-stage demand, unauthorized institutional demand, or
-      unresolved payment from ever being counted as booked.
+      unresolved payment from ever being counted as booked. The required
+      payment condition differs by order type, per the branches below —
+      none of the branches ever bypass the procurement condition.
     conditions:
-      - "This order type's required payment condition is satisfied in payment_status (e.g., PAID_IN_FULL for direct consumer checkout per the canonical example; DEPOSIT_RECEIVED or PAID_IN_FULL where a deposit-only booking is permitted for group/catering — exact required level per channel is CONFIGURABLE/OPEN, see decision register)."
-      - "procurement_status is AUTHORIZED, NOT_REQUIRED, or NOT_APPLICABLE — never PENDING or DECLINED."
+      - "procurement_status is AUTHORIZED, NOT_REQUIRED, or NOT_APPLICABLE — never PENDING or DECLINED. Applies to every order type; PAYMENT_NOT_YET_DUE (below) never substitutes for or bypasses this condition."
       - "For group_catering/institutional: lifecycle has passed through CUSTOMER_ACCEPTED (acceptance recorded, verbal or written)."
       - "For scheduled_preorder/same_day: the checkout capacity hold for this order has ACTIVE status and is being atomically converted in the same operation (see capacity_hold section) — capacity is never decremented before this gate and never decremented twice."
+    payment_condition_by_order_type:
+      scheduled_preorder_and_same_day: >
+        payment_status = PAID_IN_FULL. Not weakened by this correction —
+        direct consumer checkout still requires payment in full before
+        confirmation.
+      group_catering: >
+        payment_status = DEPOSIT_RECEIVED or PAID_IN_FULL, per whichever
+        the future deposit policy for that booking requires — exact
+        required level is CONFIGURABLE/OPEN (see decision register,
+        item E2). PAYMENT_NOT_YET_DUE is not applicable to this order
+        type in V0.
+      institutional: >
+        payment_status = DEPOSIT_RECEIVED, PAID_IN_FULL, OR
+        PAYMENT_NOT_YET_DUE. The PAYMENT_NOT_YET_DUE branch is valid
+        ONLY when: (a) the applicable institutional/payment terms for
+        this counterparty allow payment after fulfillment or invoicing;
+        (b) customer acceptance has been recorded (CUSTOMER_ACCEPTED);
+        (c) procurement_status is AUTHORIZED or legitimately
+        NOT_REQUIRED for that counterparty; and (d) every other
+        confirmation prerequisite above is satisfied. Whether a given
+        institutional order actually uses PAYMENT_NOT_YET_DUE, versus
+        requiring payment/deposit at booking, is a per-counterparty
+        term — never assumed by default (see decision register).
 
   to_PRODUCTION_COMMITTED:
     description: "An order may be admitted to the active production manifest only when:"
@@ -722,6 +800,9 @@ guardrails:
   - rule: "For institutional orders, gates.to_CONFIRMED requires procurement_status = AUTHORIZED, NOT_REQUIRED, or NOT_APPLICABLE. CUSTOMER_ACCEPTED alone (procurement_status = PENDING) never satisfies the gate."
     prevents: "An institutional order being counted before required authorization; a verbal/written yes being mistaken for procurement authorization."
 
+  - rule: "payment_status = PAYMENT_NOT_YET_DUE never substitutes for, or bypasses, the procurement_status condition in gates.to_CONFIRMED — an institutional order with procurement_status = PENDING cannot reach CONFIRMED regardless of its payment terms."
+    prevents: "An approved pay-on-terms arrangement being mistaken for, or used to bypass, procurement authorization."
+
   - rule: "Lifecycle CANCELLED or EXPIRED removes the order from PRODUCTION_COMMITTED / the active manifest as part of the same transition, not a separate later step."
     prevents: "A cancelled or expired order remaining on the production manifest."
 
@@ -754,20 +835,35 @@ reporting_dimensions:
     - id: fulfilled_revenue
       definition: "Sum of order value where fulfillment_status = FULFILLED, regardless of payment_status."
     - id: outstanding_receivable
-      definition: "Sum of order value where payment_status = INVOICED_OUTSTANDING (or DEPOSIT_RECEIVED with a balance remaining)."
+      definition: >
+        Sum of order value where payment_status = INVOICED_OUTSTANDING
+        (or DEPOSIT_RECEIVED with a balance remaining). Explicitly
+        EXCLUDES payment_status = PAYMENT_NOT_YET_DUE — a receivable
+        must actually be outstanding (invoiced or otherwise due), not
+        merely destined to become due later.
     - id: cancelled_or_reversed_value
       definition: "Sum of order value where lifecycle = CANCELLED, or payment_status = REFUNDED_OR_REVERSED, tracked separately from the above, never netted silently against them."
     - id: production_commitments
       definition: "Sum of quantities/value where lifecycle = PRODUCTION_COMMITTED as of a given moment — this is what the production manifest reflects."
+  payment_not_yet_due_note: >
+    An order with payment_status = PAYMENT_NOT_YET_DUE contributes to
+    confirmed_booked_revenue (and to production_commitments/
+    fulfilled_revenue as its lifecycle/fulfillment progress) but
+    contributes to NEITHER paid_revenue NOR outstanding_receivable. It
+    is booked but not yet payable/invoiced. This does not create a
+    seventh mandatory top-line reporting figure — it is a clarification
+    of how existing figures treat this payment state.
   guardrail: >
     Case 8. A $2,000 quote (QUOTE_SENT, not accepted) contributes to
     pipeline_value only. A $700 paid scheduled preorder (CONFIRMED,
     PAID_IN_FULL) contributes to confirmed_booked_revenue and
-    paid_revenue. A $1,200 PO-authorized-but-unpaid institutional
-    booking (CONFIRMED, INVOICED_OUTSTANDING or NOT_STARTED pending
-    invoicing) contributes to confirmed_booked_revenue and
-    outstanding_receivable, not to paid_revenue. No single figure may
-    combine these without labeling which dimension it represents.
+    paid_revenue. A $1,200 PO-authorized institutional booking with
+    payment not yet due under approved terms (CONFIRMED,
+    PAYMENT_NOT_YET_DUE) contributes to confirmed_booked_revenue only —
+    not to paid_revenue, and not to outstanding_receivable until an
+    invoice/receivable actually becomes due (payment_status transitions
+    to INVOICED_OUTSTANDING). No single figure may combine these
+    without labeling which dimension it represents.
 
 # =============================================================================
 # PRODUCTION MANIFEST — live view, not a frozen historical record
