@@ -13,6 +13,18 @@
 # ACCEPTANCE TESTS — 2026-09-04" (Google Doc, owner-authorized).
 # COMPANION: LOUMIES_ORDER_STATE_MODEL_V0_1_ACCEPTANCE_TESTS.md
 #
+# CLOSEOUT ADDENDUM (2026-09-04, "LOUMIES — CLAUDE CODE CLOSEOUT ADDENDUM
+# — V0.1 AGGREGATION SCOPE"): ADD-04's aggregation scope, originally
+# reported OPEN, was already owner-locked by Rania as a cross-path
+# operating-date review trigger — it counts ALL CONFIRMED scheduled/
+# advance business on the date (scheduled_preorder, group_table, DIRECT
+# group_catering, REVIEWED group_catering once CONFIRMED, and legitimately
+# confirmed institutional orders), excluding only same_day. ADD-04 and the
+# fourth condition of gates.to_CONFIRMED (EXT-06) are corrected to encode
+# this. EXT-06B (DRAFT->EXPIRED / hold-expiry generalized to group_table
+# and DIRECT group_catering) was separately accepted as-is and is
+# unchanged by this addendum.
+#
 # No vendor selection. No deployment. No menu/Table/pricing/cancellation
 # policy change. No new lifecycle states. No new commercial_workflow value
 # beyond DIRECT/REVIEWED. No procurement concept invented.
@@ -20,7 +32,7 @@
 
 meta:
   title: "LOUMIES Order State Model V0.1 Patch"
-  version: "v0.1-patch"
+  version: "v0.1-patch (closeout: aggregation scope owner-locked)"
   status: "additive specification delta, not executable, not a replacement"
   patch_principle: >
     Do not redesign the state machine. Add only what is required to
@@ -154,47 +166,87 @@ additions:
       state model. This addition provides exactly that representation —
       a named, referenced gate, not a hard-coded number baked into
       lifecycle mechanics.
+    closeout_note: >
+      CLOSEOUT ADDENDUM (2026-09-04, "LOUMIES — CLAUDE CODE CLOSEOUT
+      ADDENDUM — V0.1 AGGREGATION SCOPE"): the aggregation-scope question
+      originally left OPEN below was already owner-locked by Rania before
+      this patch was written. This block is corrected accordingly — the
+      rule is cross-path (DIRECT and REVIEWED alike, institutional
+      included, once each legitimately reaches CONFIRMED), not a
+      DIRECT-only counter. Same_day remains the sole explicit exclusion.
+      No business meaning is invented here; this closeout only encodes
+      the already-existing owner decision that the original patch
+      under-scoped.
     value:
       external_business_rules:
         - id: aggregate_date_level_review_threshold
           label: "Aggregate scheduled/advance date-level auto-confirm review threshold"
           description: >
-            An owner-approved, externally configurable business rule
-            (currently modeled at $3,000, per owner approval) that caps
-            how much confirmed DIRECT scheduled/advance revenue for a
-            given operating date may auto-confirm without operator
-            review. This is a configurable business-logic gate, not a
-            physical-capacity number, and is not redefined, recalculated,
-            or hard-coded by this patch.
-          current_configured_value: "$3,000 aggregate (owner-approved external configuration; value itself is not restated as a permanent rule by this state-model patch)"
-          applies_to_order_types_when_DIRECT: [scheduled_preorder, group_table, group_catering]
+            An owner-locked, externally configurable business rule
+            (currently modeled at $3,000) that caps how much CONFIRMED
+            scheduled/advance business for a given operating date may
+            auto-confirm without operator review. This is a cross-path
+            aggregate: it counts CONFIRMED revenue regardless of whether
+            the order reached CONFIRMED via the DIRECT branch or the
+            REVIEWED branch of gates.to_CONFIRMED — the counter tracks
+            what is actually booked for the date, not which workflow got
+            it there. This is a configurable business-logic gate, not a
+            physical-capacity number, and its numeric value is not
+            redefined, recalculated, or hard-coded by this patch.
+          current_configured_value: "$3,000 aggregate (owner-approved external configuration; value itself is not restated as a permanent rule by this state-model patch; it is an auto-confirm REVIEW TRIGGER, not a rejection threshold — see effect_when_threshold_would_be_exceeded)."
+          applies_to: >
+            ALL CONFIRMED scheduled/advance business for the operating
+            date, specifically:
+            (1) scheduled_preorder (Regular Menu scheduled business),
+            once CONFIRMED via the DIRECT branch (L01);
+            (2) group_table (LOUMIES Tables), once CONFIRMED via the
+            DIRECT branch (L01);
+            (3) group_catering with commercial_workflow = DIRECT, once
+            CONFIRMED via the DIRECT branch (L01);
+            (4) group_catering with commercial_workflow = REVIEWED,
+            once it truthfully reaches CONFIRMED via the REVIEWED branch
+            (L08) — checked immediately before that CONFIRMED transition,
+            not at QUOTE_SENT/CUSTOMER_ACCEPTED;
+            (5) institutional orders, once they legitimately reach
+            CONFIRMED via the REVIEWED branch (L08) under their
+            procurement/payment terms — checked immediately before that
+            CONFIRMED transition, after procurement_status and the
+            payment condition are otherwise satisfied, never before.
           explicitly_excluded: [same_day]
           exclusion_rationale: >
             Same-day is a separate released-inventory pool outside the
             scheduled/advance counter (see EXT-08 and ACCEPTANCE_TESTS
             Test 14) — owner-approved, not invented by this patch.
-          effect_when_within_threshold: "No effect — DIRECT confirmation gate (see EXT-06) proceeds normally."
+            Same_day never checks this rule at any point in its
+            confirmation path (L01, same_day branch).
+          effect_when_within_threshold: "No effect — the applicable confirmation gate (DIRECT via L01, or REVIEWED/institutional via L08 — see EXT-06) proceeds normally."
           effect_when_threshold_would_be_exceeded: >
             The order does NOT auto-confirm and does NOT silently accept
-            or double-count capacity. Instead of crossing the DIRECT
-            branch of gates.to_CONFIRMED, the order takes existing
-            lifecycle transition L12 (-> EXCEPTION) unchanged from V0.
-            Its capacity_hold remains ACTIVE (subject to its own normal
-            expiration) while pending operator review — the hold is
-            neither auto-converted nor auto-released merely because
-            lifecycle entered EXCEPTION. The operator then resolves via
-            existing L13 (-> CONFIRMED, if the overage is explicitly
-            authorized) or L14 (-> CANCELLED, if not). No new lifecycle
-            state is introduced; V0's existing EXCEPTION mechanism is
-            reused exactly as designed.
+            or double-count capacity. Instead of crossing gates.to_
+            CONFIRMED — whether via L01 for a DIRECT order type, or via
+            L08 for REVIEWED group_catering/institutional — the order
+            takes existing lifecycle transition L12 (-> EXCEPTION)
+            unchanged from V0. For a DIRECT order, its capacity_hold
+            remains ACTIVE (subject to its own normal expiration) while
+            pending operator review — the hold is neither auto-converted
+            nor auto-released merely because lifecycle entered EXCEPTION.
+            The operator then resolves via existing L13 (-> CONFIRMED, if
+            the overage is explicitly authorized) or L14 (-> CANCELLED,
+            if not). No new lifecycle state is introduced; V0's existing
+            EXCEPTION mechanism is reused exactly as designed, for every
+            order type this rule applies to.
           scope_of_aggregation_status: >
-            OPEN (per V0's existing decision-discipline pattern — see
-            LOUMIES_ORDER_OPEN_DECISIONS_V0.md). Whether REVIEWED
-            group_catering or institutional confirmed revenue also
-            counts toward this same-date aggregate, in addition to the
-            DIRECT order types listed above, is not specified in the
-            governing patch spec and is not invented here. Recommended
-            open-decisions register entry: see report to Rania/Rio.
+            OWNER-LOCKED (no longer OPEN). Per the 2026-09-04 closeout
+            addendum, Rania had already owner-locked this as a cross-path
+            operating-date review trigger covering ALL CONFIRMED
+            scheduled/advance business on the date — scheduled_preorder,
+            group_table, DIRECT group_catering, REVIEWED group_catering
+            once CONFIRMED, and legitimately confirmed institutional
+            orders — with same_day as the sole explicit exclusion. The
+            corresponding LOUMIES_ORDER_OPEN_DECISIONS_V0.md entry (if
+            one is added when V0.1 is eventually consolidated into a
+            future V0 revision) should record this as OWNER-LOCKED, not
+            OPEN.
 
 # =============================================================================
 # PART 2 — EXTENSIONS (existing V0 elements broadened; nothing removed)
@@ -360,11 +412,16 @@ extensions:
       (a) Broaden the third bullet condition from "scheduled_preorder/
       same_day" to every DIRECT order type. (b) Add group_table and
       group_catering-DIRECT entries to payment_condition_by_order_type.
-      (c) Reference the external aggregate-review-threshold rule
-      (ADD-04) as an additional condition for the order types it applies
-      to. (d) The existing procurement condition, institutional payment
-      branch, and PAYMENT_NOT_YET_DUE guardrail are UNCHANGED — quoted
-      verbatim below for completeness only, not modified.
+      (c) Add a fourth condition referencing the external aggregate-
+      review-threshold rule (ADD-04), applying it cross-path — to the
+      DIRECT branch (L01: scheduled_preorder, group_table, DIRECT
+      group_catering) and to the REVIEWED branch (L08: REVIEWED
+      group_catering, institutional) alike, per the 2026-09-04 closeout
+      addendum's owner-locked scope; same_day is excluded from this
+      condition regardless of branch. (d) The existing procurement
+      condition, institutional payment branch, and PAYMENT_NOT_YET_DUE
+      guardrail are UNCHANGED — quoted verbatim below for completeness
+      only, not modified.
     result:
       to_CONFIRMED:
         description: >
@@ -379,7 +436,7 @@ extensions:
           - "procurement_status is AUTHORIZED, NOT_REQUIRED, or NOT_APPLICABLE — never PENDING or DECLINED. Applies to every order type; PAYMENT_NOT_YET_DUE never substitutes for or bypasses this condition. [UNCHANGED from V0]"
           - "For group_catering (REVIEWED only) and institutional: lifecycle has passed through CUSTOMER_ACCEPTED (acceptance recorded, verbal or written). [EXTENDED: now explicit that this bullet applies only to REVIEWED group_catering, matching EXT-06A; institutional behavior unchanged]"
           - "For every DIRECT order type (scheduled_preorder, same_day, group_table, group_catering-when-DIRECT): the checkout capacity hold for this order has ACTIVE status and is being atomically converted in the same operation (see capacity_hold, EXT-07) — capacity is never decremented before this gate and never decremented twice. [EXTENDED from 'scheduled_preorder/same_day' to all DIRECT order types]"
-          - "For order types the aggregate_date_level_review_threshold rule applies to (ADD-04): the aggregate check for the operating date passes, OR the owner has explicitly authorized the overage. Same_day is explicitly excluded from this condition. [NEW]"
+          - "For scheduled_preorder, group_table, and group_catering (DIRECT or REVIEWED, once it reaches this gate via L01 or L08 respectively), and for institutional (via L08): the aggregate_date_level_review_threshold check (ADD-04, owner-locked cross-path scope per the 2026-09-04 closeout addendum) for the operating date passes, OR the owner has explicitly authorized the overage. This condition is checked immediately before the CONFIRMED transition, on the DIRECT branch (L01) and the REVIEWED branch (L08) alike — never bypassed because an order arrived via REVIEWED rather than DIRECT. same_day is explicitly excluded from this condition at every branch. [NEW, scope corrected by closeout addendum]"
         payment_condition_by_order_type:
           scheduled_preorder_and_same_day: >
             payment_status = PAID_IN_FULL. Not weakened by this patch —
@@ -559,3 +616,5 @@ self_check:
     result: "PASS — capacity_hold's explicitly_out_of_scope bullets are unchanged and reaffirmed as G-18."
   - constraint: "$3,000 rule stays configurable, not hard-coded universal physical capacity"
     result: "PASS — represented as external_business_rules.aggregate_date_level_review_threshold (ADD-04), a named configurable gate referenced by, not embedded into, lifecycle mechanics; routes to the existing EXCEPTION state rather than a new one."
+  - constraint: "Aggregate review threshold is cross-path (owner-locked, 2026-09-04 closeout addendum) — DIRECT and REVIEWED confirmed business both count, same_day excluded, no new lifecycle state"
+    result: "PASS — ADD-04.applies_to now names scheduled_preorder, group_table, DIRECT group_catering, REVIEWED group_catering (once CONFIRMED), and legitimately confirmed institutional orders; scope_of_aggregation_status is OWNER-LOCKED, not OPEN. gates.to_CONFIRMED's fourth condition (EXT-06) applies the check on both the DIRECT branch (L01) and the REVIEWED branch (L08); overage on either branch routes through existing L12 (EXCEPTION) / L13 / L14, unchanged from the original patch — no new lifecycle state introduced."

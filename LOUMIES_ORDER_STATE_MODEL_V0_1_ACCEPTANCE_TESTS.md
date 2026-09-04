@@ -34,7 +34,7 @@ Every test below is evaluated by tracing the patched model (V0 baseline + `LOUMI
 **When:** the customer attempts checkout.
 **Then:** automatic confirmation stops; the order moves to the owner-review/exception path per approved experience logic; the system does not silently accept the order or double-count capacity.
 
-**Result: PASS.** `ADD-04` (`aggregate_date_level_review_threshold`) is checked as part of `EXT-05`'s trigger. When it would be exceeded without explicit owner authorization, the order does not cross `L01` into `CONFIRMED`; it takes unmodified baseline transition `L12` (`→ EXCEPTION`) instead. Its capacity hold stays `ACTIVE` (subject to normal expiry) rather than being force-converted or force-released, per `ADD-04.effect_when_threshold_would_be_exceeded`. No new lifecycle state is introduced — `EXCEPTION` is the existing V0 state, resolved onward via unmodified `L13` (owner authorizes → `CONFIRMED`) or `L14` (→ `CANCELLED`).
+**Result: PASS.** `ADD-04` (`aggregate_date_level_review_threshold`) is checked as part of `EXT-05`'s trigger, and — per the 2026-09-04 closeout addendum's owner-locked cross-path scope — this Table's contribution is checked against the *same* aggregate that already includes any other CONFIRMED scheduled/advance business on the date (scheduled_preorder, other group_table orders, DIRECT or REVIEWED group_catering once CONFIRMED, and legitimately confirmed institutional orders), not a Table-only or DIRECT-only counter. When the aggregate would be exceeded without explicit owner authorization, the order does not cross `L01` into `CONFIRMED`; it takes unmodified baseline transition `L12` (`→ EXCEPTION`) instead. Its capacity hold stays `ACTIVE` (subject to normal expiry) rather than being force-converted or force-released, per `ADD-04.effect_when_threshold_would_be_exceeded`. No new lifecycle state is introduced — `EXCEPTION` is the existing V0 state, resolved onward via unmodified `L13` (owner authorizes → `CONFIRMED`) or `L14` (→ `CANCELLED`).
 
 ---
 
@@ -74,7 +74,7 @@ Every test below is evaluated by tracing the patched model (V0 baseline + `LOUMI
 **When:** the customer attempts to pay.
 **Then:** the system rechecks date/capacity before confirmation; the stale quote does not bypass the current date-level rule.
 
-**Result: PASS.** New guardrail `G-19` states this explicitly: capacity and any applicable owner-review rule are rechecked concurrency-safely against *current* state immediately before payment/confirmation, not against the state at quote-issuance time. `L08`'s gate (`gates.to_CONFIRMED`, `EXT-06`) is evaluated at the moment of the `CUSTOMER_ACCEPTED → CONFIRMED` transition attempt, not cached from an earlier point.
+**Result: PASS.** New guardrail `G-19` states this explicitly: capacity and any applicable owner-review rule are rechecked concurrency-safely against *current* state immediately before payment/confirmation, not against the state at quote-issuance time. `L08`'s gate (`gates.to_CONFIRMED`, `EXT-06`) is evaluated at the moment of the `CUSTOMER_ACCEPTED → CONFIRMED` transition attempt, not cached from an earlier point — and per the closeout addendum, the "applicable owner-review rule" explicitly includes the `aggregate_date_level_review_threshold` (`ADD-04`): a REVIEWED Catering order checks the *same* cross-path date-level aggregate as a DIRECT order does, immediately before `CONFIRMED`, not only date/item capacity. A stale quote that would now push the date over the threshold is routed to `EXCEPTION` (`L12`) at this recheck, exactly as a DIRECT order would be.
 
 ---
 
@@ -102,7 +102,13 @@ Every test below is evaluated by tracing the patched model (V0 baseline + `LOUMI
 **Given:** institutional Catering requiring PO authorization.
 **Then:** `commercial_workflow = REVIEWED`; `order_type` remains `institutional`; `procurement_status = PENDING` blocks `CONFIRMED`; after authorized PO and other gates, the order may confirm under existing payment terms. No new commercial-workflow value is needed.
 
-**Result: PASS.** `ADD-03`'s matrix fixes `institutional → REVIEWED` (the only allowed value). Baseline `procurement_states`/`procurement_transitions` and `gates.to_CONFIRMED`'s procurement condition ("never PENDING or DECLINED") are entirely unchanged by this patch — see `explicitly_unchanged`. `EXT-06`'s institutional payment branch is quoted verbatim from V0, unmodified. No `PROCUREMENT_AUTHORIZED`-as-workflow or any third `commercial_workflow` value is introduced anywhere in the patch (`self_check` confirms exactly two values).
+**Result: PASS.** `ADD-03`'s matrix fixes `institutional → REVIEWED` (the only allowed value). Baseline `procurement_states`/`procurement_transitions` and `gates.to_CONFIRMED`'s procurement condition ("never PENDING or DECLINED") are entirely unchanged by this patch — see `explicitly_unchanged`. `EXT-06`'s institutional payment branch is quoted verbatim from V0, unmodified. No `PROCUREMENT_AUTHORIZED`-as-workflow or any third `commercial_workflow` value is introduced anywhere in the patch (`self_check` confirms exactly two values). Per the closeout addendum, once this order's procurement and payment gates are otherwise satisfied it *also* checks the cross-path `aggregate_date_level_review_threshold` (`ADD-04`) immediately before `CONFIRMED`, exactly like DIRECT and REVIEWED Catering do — institutional confirmed business is not a silent exception to the date-level aggregate, only `same_day` is.
+
+---
+
+## TEST 03/07/10 CLOSEOUT NOTE
+
+These three tests were amended by the 2026-09-04 closeout addendum, which corrected `ADD-04.scope_of_aggregation_status` from OPEN to OWNER-LOCKED cross-path scope: the $3,000 aggregate always counted *all* CONFIRMED scheduled/advance business for the date (DIRECT and REVIEWED alike, institutional included), never only DIRECT orders. No other test in this suite changes, and no 16th test was added.
 
 ---
 
@@ -174,6 +180,6 @@ Every test below is evaluated by tracing the patched model (V0 baseline + `LOUMI
 
 ---
 
-## One open scope note surfaced during validation (not a contradiction)
+## Aggregation-scope note — resolved by the 2026-09-04 closeout addendum
 
-The governing patch spec's $3,000 aggregate rule (`ADD-04`) is explicit that `same_day` is excluded (Test 14), but does not specify whether REVIEWED `group_catering` or `institutional` confirmed revenue also counts toward the same-date aggregate alongside the DIRECT order types it clearly does apply to (`scheduled_preorder`, `group_table`, DIRECT `group_catering`). This is left `OPEN` in `ADD-04.scope_of_aggregation_status`, consistent with V0's existing decision-discipline pattern (see `LOUMIES_ORDER_OPEN_DECISIONS_V0.md`) rather than invented here. This does not block any of the 15 tests above and is not a contradiction requiring escalation — it is a genuine open parameter, flagged for the owner-decision list in the completion report.
+An earlier version of this document flagged the $3,000 aggregate rule's scope (`ADD-04`) as an open question: whether REVIEWED `group_catering` or `institutional` confirmed revenue counts toward the same-date aggregate alongside the DIRECT order types. That question was never actually open — Rania had already owner-locked it as a cross-path rule before this patch was first written. `ADD-04.scope_of_aggregation_status` is now `OWNER-LOCKED`: the aggregate counts ALL CONFIRMED scheduled/advance business for the date — `scheduled_preorder`, `group_table`, `group_catering` (DIRECT or REVIEWED, once CONFIRMED), and legitimately confirmed `institutional` orders — with `same_day` as the sole explicit exclusion (Test 14, unchanged). Tests 03, 07, and 10 above reflect this cross-path scope.
