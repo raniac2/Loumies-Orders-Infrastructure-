@@ -1,0 +1,561 @@
+# =============================================================================
+# LOUMIES ORDER STATE MODEL — V0.1 PATCH (additive delta against approved V0)
+# =============================================================================
+# STATUS: SPECIFICATION ARTIFACT ONLY. NOT executable application code.
+# This file does NOT replace, rewrite, or restate LOUMIES_ORDER_STATE_MODEL_V0.yaml.
+# It is a structured, additive delta: every change below names the exact
+# baseline element it touches and gives either (a) a pure addition, or
+# (b) the complete resulting object for an extended/modified element, so a
+# later consolidator can apply this patch mechanically without inventing
+# rules of their own.
+#
+# GOVERNING SOURCE: "LOUMIES — ORDER STATE MODEL V0.1 PATCH SPEC &
+# ACCEPTANCE TESTS — 2026-09-04" (Google Doc, owner-authorized).
+# COMPANION: LOUMIES_ORDER_STATE_MODEL_V0_1_ACCEPTANCE_TESTS.md
+#
+# No vendor selection. No deployment. No menu/Table/pricing/cancellation
+# policy change. No new lifecycle states. No new commercial_workflow value
+# beyond DIRECT/REVIEWED. No procurement concept invented.
+# =============================================================================
+
+meta:
+  title: "LOUMIES Order State Model V0.1 Patch"
+  version: "v0.1-patch"
+  status: "additive specification delta, not executable, not a replacement"
+  patch_principle: >
+    Do not redesign the state machine. Add only what is required to
+    represent truthful direct-standard and reviewed/custom commerce,
+    per the owner-approved 4 September 2026 commercial architecture.
+
+target_baseline:
+  repository: "raniac2/Loumies-Orders-Infrastructure-"
+  branch: "claude/loumies-v0-ordering-spec-t87f80"
+  file: "LOUMIES_ORDER_STATE_MODEL_V0.yaml"
+  blob_sha: "1e3ae49440ee05c560dd70752ba402d5bd8cab69"
+  note: >
+    This blob SHA was verified against the current HEAD of the working
+    branch at patch-authoring time (git hash-object and git ls-tree both
+    confirm 1e3ae49440ee05c560dd70752ba402d5bd8cab69 at HEAD). The
+    approved V0 file is not modified by this patch.
+
+# =============================================================================
+# PART 1 — ADDITIONS (new concepts; nothing in V0 is removed or renamed)
+# =============================================================================
+
+additions:
+
+  # ---------------------------------------------------------------------------
+  # 1.1 New order_type
+  # ---------------------------------------------------------------------------
+  - id: ADD-01
+    op: ADD_ORDER_TYPE
+    target: "order_types (append)"
+    value:
+      id: group_table
+      label: "Standardized LOUMIES Table"
+      description: >
+        Fixed public 10 / 15 / 20 LOUMIES Table package, Tier 1 / 2 / 3,
+        self-configured by the customer, prepaid, no human quote required
+        when the request stays within published standard rules. Required
+        commercial_workflow: DIRECT (see ADD-02). Table tier content,
+        fixed sizes, and quantity formulas are frozen elsewhere and are
+        NOT redefined by this patch.
+
+  # ---------------------------------------------------------------------------
+  # 1.2 New orthogonal dimension E — commercial_workflow
+  # ---------------------------------------------------------------------------
+  - id: ADD-02
+    op: ADD_DIMENSION
+    target: "new top-level section: commercial_workflow_values (peer to payment_states, procurement_states, fulfillment_states)"
+    rationale: >
+      The V0 baseline forces group_catering through QUOTE_SENT ->
+      CUSTOMER_ACCEPTED before CONFIRMED and limits DRAFT -> CONFIRMED
+      plus automatic checkout holds to scheduled_preorder and same_day.
+      That mismatch fabricates quote events for standardized Tables and
+      standard direct Catering that never actually occurred. This
+      dimension resolves it without touching lifecycle, payment,
+      procurement, or fulfillment.
+    value:
+      commercial_workflow_values:
+        - id: DIRECT
+          label: "Direct"
+          description: >
+            Offer, quantity structure, published price, lead time, and
+            standard terms are already known. Customer may configure/
+            select, pass date/catalog/cutoff/capacity checks, pay, and
+            reach CONFIRMED without a human quote event. DIRECT does NOT
+            mean automatic acceptance regardless of cutoff, capacity,
+            payment, or operator-review rules (see ADD-06, the external
+            business-rule gate).
+        - id: REVIEWED
+          label: "Reviewed"
+          description: >
+            The request requires LOUMIES judgment before commercial
+            commitment: nonstandard items/quantities, unusual service/
+            setup, special pricing, custom event terms, exception
+            handling, or procurement-style institutional work. The
+            existing inquiry/qualification/quote/acceptance lifecycle
+            path (INQUIRY, QUALIFICATION, QUOTE_SENT, CUSTOMER_ACCEPTED
+            — all unchanged from V0) remains the truthful path. REVIEWED
+            does NOT mean procurement is required — procurement remains
+            its own orthogonal dimension C, untouched by this patch.
+      field_definition:
+        name: commercial_workflow
+        required: true
+        allowed_values: [DIRECT, REVIEWED]
+        cardinality: "exactly one value per order, set at order creation and not silently rewritten thereafter"
+      guardrails:
+        - "commercial_workflow does not replace lifecycle_status, payment_status, procurement_status, fulfillment_status, commerce_path, package identity, or order_type. It is a fifth, independent fact about the order."
+        - "The value is auditable and may not silently rewrite an order's history — an order created DIRECT does not retroactively acquire QUOTE_SENT/CUSTOMER_ACCEPTED history, and vice versa (see ADD-11)."
+        - "A genuinely later reviewed amendment to a DIRECT order (e.g., a customer requesting a nonstandard change after booking) creates a separate, distinctly audited event/path — it never rewrites the original DIRECT order's history to manufacture a quote that did not occur."
+
+  # ---------------------------------------------------------------------------
+  # 1.3 order_type / commercial_workflow matrix
+  # ---------------------------------------------------------------------------
+  - id: ADD-03
+    op: ADD_REFERENCE_TABLE
+    target: "new top-level section: order_type_workflow_matrix"
+    value:
+      order_type_workflow_matrix:
+        - order_type: scheduled_preorder
+          allowed_commercial_workflow: [DIRECT]
+        - order_type: same_day
+          allowed_commercial_workflow: [DIRECT]
+        - order_type: group_table
+          allowed_commercial_workflow: [DIRECT]
+        - order_type: group_catering
+          allowed_commercial_workflow: [DIRECT, REVIEWED]
+        - order_type: institutional
+          allowed_commercial_workflow: [REVIEWED]
+      customer_identity_guardrail: >
+        order_type is determined by the transaction, never inferred from
+        or forced by customer/account identity. An institutional or
+        company customer who buys an ordinary published DIRECT-eligible
+        offer by normal card checkout produces an order whose order_type
+        is scheduled_preorder, same_day, group_table, or DIRECT
+        group_catering (whichever the transaction actually is), with
+        procurement_status = NOT_APPLICABLE — while the customer/account
+        record may separately and simultaneously retain an institutional
+        or company identity. Identity does not force institutional order
+        semantics onto a transaction that is not procurement-style (see
+        ACCEPTANCE_TESTS Test 11).
+
+  # ---------------------------------------------------------------------------
+  # 1.4 External business rule: the owner-approved aggregate review threshold
+  # ---------------------------------------------------------------------------
+  - id: ADD-04
+    op: ADD_EXTERNAL_BUSINESS_RULE
+    target: "new top-level section: external_business_rules"
+    rationale: >
+      Item 9 of the governing patch spec requires the owner-approved
+      aggregate scheduled/advance date-level auto-confirm review rule to
+      remain external/configurable business logic, representable without
+      hard-coding a universal numeric physical-capacity value into the
+      state model. This addition provides exactly that representation —
+      a named, referenced gate, not a hard-coded number baked into
+      lifecycle mechanics.
+    value:
+      external_business_rules:
+        - id: aggregate_date_level_review_threshold
+          label: "Aggregate scheduled/advance date-level auto-confirm review threshold"
+          description: >
+            An owner-approved, externally configurable business rule
+            (currently modeled at $3,000, per owner approval) that caps
+            how much confirmed DIRECT scheduled/advance revenue for a
+            given operating date may auto-confirm without operator
+            review. This is a configurable business-logic gate, not a
+            physical-capacity number, and is not redefined, recalculated,
+            or hard-coded by this patch.
+          current_configured_value: "$3,000 aggregate (owner-approved external configuration; value itself is not restated as a permanent rule by this state-model patch)"
+          applies_to_order_types_when_DIRECT: [scheduled_preorder, group_table, group_catering]
+          explicitly_excluded: [same_day]
+          exclusion_rationale: >
+            Same-day is a separate released-inventory pool outside the
+            scheduled/advance counter (see EXT-08 and ACCEPTANCE_TESTS
+            Test 14) — owner-approved, not invented by this patch.
+          effect_when_within_threshold: "No effect — DIRECT confirmation gate (see EXT-06) proceeds normally."
+          effect_when_threshold_would_be_exceeded: >
+            The order does NOT auto-confirm and does NOT silently accept
+            or double-count capacity. Instead of crossing the DIRECT
+            branch of gates.to_CONFIRMED, the order takes existing
+            lifecycle transition L12 (-> EXCEPTION) unchanged from V0.
+            Its capacity_hold remains ACTIVE (subject to its own normal
+            expiration) while pending operator review — the hold is
+            neither auto-converted nor auto-released merely because
+            lifecycle entered EXCEPTION. The operator then resolves via
+            existing L13 (-> CONFIRMED, if the overage is explicitly
+            authorized) or L14 (-> CANCELLED, if not). No new lifecycle
+            state is introduced; V0's existing EXCEPTION mechanism is
+            reused exactly as designed.
+          scope_of_aggregation_status: >
+            OPEN (per V0's existing decision-discipline pattern — see
+            LOUMIES_ORDER_OPEN_DECISIONS_V0.md). Whether REVIEWED
+            group_catering or institutional confirmed revenue also
+            counts toward this same-date aggregate, in addition to the
+            DIRECT order types listed above, is not specified in the
+            governing patch spec and is not invented here. Recommended
+            open-decisions register entry: see report to Rania/Rio.
+
+# =============================================================================
+# PART 2 — EXTENSIONS (existing V0 elements broadened; nothing removed)
+# =============================================================================
+# Each entry names the exact baseline element, states the delta, and gives
+# the complete resulting object so no interpretation is required to apply it.
+# =============================================================================
+
+extensions:
+
+  # ---------------------------------------------------------------------------
+  # 2.1 Generalize the DIRECT confirmation transition (baseline: L01)
+  # ---------------------------------------------------------------------------
+  - id: EXT-05
+    op: EXTEND_TRANSITION
+    target: "lifecycle_transitions[id=L01]"
+    baseline_value:
+      id: L01
+      from: [DRAFT]
+      to: CONFIRMED
+      applicable_order_types: [scheduled_preorder, same_day]
+      trigger: "Checkout completes: capacity hold atomically converts and this order type's payment gate is satisfied (see gates.to_CONFIRMED)"
+      actor: system
+      requires_operator_action: false
+    delta: >
+      Broaden applicable_order_types to include group_table
+      unconditionally, and group_catering conditionally (only when
+      commercial_workflow = DIRECT for that specific order — REVIEWED
+      group_catering continues to use the unchanged L02-L09 -> L08 path).
+      Add the external aggregate-review-threshold condition (ADD-04) as
+      an explicit part of the trigger for order types the rule applies
+      to. No QUOTE_SENT or CUSTOMER_ACCEPTED event is instantiated on
+      this path, for any order type reaching CONFIRMED through it.
+    result:
+      id: L01
+      from: [DRAFT]
+      to: CONFIRMED
+      applicable_order_types: [scheduled_preorder, same_day, group_table, group_catering]
+      applicable_when:
+        group_catering: "commercial_workflow = DIRECT only (REVIEWED group_catering uses L02-L09 -> L08 instead, unchanged from V0)"
+      trigger: >
+        Direct checkout completes: availability/date/catalog/cutoff/
+        capacity checks pass; an ACTIVE temporary capacity hold for this
+        order (see capacity_hold, EXT-07) atomically converts to
+        confirmed capacity in the same operation; this order type's
+        payment gate is satisfied (see gates.to_CONFIRMED, EXT-06); and,
+        where the aggregate_date_level_review_threshold rule (ADD-04)
+        applies to this order type, the aggregate check for the
+        operating date passes OR the owner has explicitly authorized the
+        overage. If the aggregate check would fail without explicit
+        authorization, this transition does not fire; the order takes
+        L12 (-> EXCEPTION) instead, unchanged from V0. No QUOTE_SENT or
+        CUSTOMER_ACCEPTED event is synthesized for a DIRECT order under
+        any circumstance.
+      actor: system
+      requires_operator_action: false
+      truth_rule: >
+        QUOTE_SENT and CUSTOMER_ACCEPTED are not instantiated for any
+        order reaching CONFIRMED via this transition, because no quote
+        event occurred.
+
+  # ---------------------------------------------------------------------------
+  # 2.2 Restrict the existing quote-path transitions to REVIEWED
+  #     (baseline: L02, L03, L04, L05, L06, L07, L08, L09 — unchanged
+  #     otherwise; institutional is unaffected in practice because
+  #     institutional is always REVIEWED per ADD-03's matrix)
+  # ---------------------------------------------------------------------------
+  - id: EXT-06A
+    op: ADD_FIELD_TO_TRANSITIONS
+    target: "lifecycle_transitions[id in {L02, L03, L04, L05, L06, L07, L08, L09}]"
+    delta: >
+      Add one new field, commercial_workflow_required: REVIEWED, to each
+      of these eight transitions. No other field on any of them changes.
+      For institutional orders this is a documentation-only constraint
+      (institutional's only allowed commercial_workflow is REVIEWED per
+      ADD-03, so the field is always already satisfied). For
+      group_catering, this is the actual behavior change the patch
+      makes: a group_catering order created with commercial_workflow =
+      DIRECT never enters INQUIRY / QUALIFICATION / QUOTE_SENT /
+      CUSTOMER_ACCEPTED at all — it uses EXT-05 (L01) instead.
+    note: >
+      Each result below is the baseline transition object verbatim, plus
+      exactly one new field (commercial_workflow_required). No other
+      field is altered on any of the eight.
+    result_per_transition:
+      L02: {id: L02, from: [DRAFT, none], to: INQUIRY, applicable_order_types: [group_catering, institutional], trigger: "Initial contact/request captured", actor: customer, requires_operator_action: false, commercial_workflow_required: REVIEWED}
+      L03: {id: L03, from: [INQUIRY], to: QUALIFICATION, applicable_order_types: [group_catering, institutional], trigger: "Operator begins feasibility review", actor: operator, requires_operator_action: true, commercial_workflow_required: REVIEWED}
+      L04: {id: L04, from: [INQUIRY, QUALIFICATION, none], to: QUOTE_SENT, applicable_order_types: [group_catering, institutional], trigger: "Operator issues a quote/SOW. May be reached directly from an initial complete request without separately instantiating INQUIRY or QUALIFICATION as recorded waypoints — see the skippable flag on those two states. A customer who submits a complete 40-person request with an explicit price ask must not be forced through artificial intermediate steps before LOUMIES can quote.\n", actor: operator, requires_operator_action: true, commercial_workflow_required: REVIEWED}
+      L05: {id: L05, from: [QUALIFICATION], to: CANCELLED, applicable_order_types: [group_catering, institutional], trigger: "Operator determines request cannot/will not be serviced", actor: operator, requires_operator_action: true, reason_code: qualification_declined, commercial_workflow_required: REVIEWED}
+      L06: {id: L06, from: [QUOTE_SENT], to: EXPIRED, applicable_order_types: [group_catering, institutional], trigger: "Acceptance window lapses without response", actor: system, requires_operator_action: false, reason_code: quote_window_expired, commercial_workflow_required: REVIEWED}
+      L07: {id: L07, from: [QUOTE_SENT], to: CUSTOMER_ACCEPTED, applicable_order_types: [group_catering, institutional], trigger: "Customer/institution accepts quote terms (verbal or written, recorded)", actor: customer, requires_operator_action: false, commercial_workflow_required: REVIEWED}
+      L08: {id: L08, from: [CUSTOMER_ACCEPTED], to: CONFIRMED, applicable_order_types: [group_catering, institutional], trigger: "This order type's cross-dimension gate is satisfied (see gates.to_CONFIRMED)", actor: operator, requires_operator_action: true, commercial_workflow_required: REVIEWED}
+      L09: {id: L09, from: [CUSTOMER_ACCEPTED], to: CANCELLED, applicable_order_types: [institutional], trigger: "Institution's procurement process does not authorize the purchase", actor: system, requires_operator_action: false, reason_code: procurement_declined, commercial_workflow_required: REVIEWED}
+
+  # ---------------------------------------------------------------------------
+  # 2.3 Consequential extension: DRAFT -> EXPIRED (baseline: L15)
+  # ---------------------------------------------------------------------------
+  - id: EXT-06B
+    op: EXTEND_TRANSITION
+    target: "lifecycle_transitions[id=L15]"
+    rationale: >
+      Not explicitly listed in the governing patch spec's lifecycle
+      section, but mechanically required by item 8's instruction to
+      generalize the capacity-hold mechanism to every DIRECT checkout
+      flow: without this extension, a group_table or DIRECT
+      group_catering order whose hold expires unpaid would have no
+      lifecycle path to EXPIRED, leaving it stuck in DRAFT. This does
+      not change approved business meaning — it applies the identical,
+      already-approved rule (an expired/abandoned DIRECT checkout
+      expires) to the newly-DIRECT order types. Flagged here explicitly
+      per the assignment's instruction to report every deviation.
+    baseline_value:
+      id: L15
+      from: [DRAFT]
+      to: EXPIRED
+      applicable_order_types: [scheduled_preorder, same_day]
+      trigger: "Preorder cutoff passes, or the order's capacity_hold reaches hold_state EXPIRED, before order reaches CONFIRMED"
+      actor: system
+      requires_operator_action: false
+      reason_code: [cutoff_passed, hold_expired]
+    result:
+      id: L15
+      from: [DRAFT]
+      to: EXPIRED
+      applicable_order_types: [scheduled_preorder, same_day, group_table, group_catering]
+      applicable_when:
+        group_catering: "commercial_workflow = DIRECT only (REVIEWED group_catering's quote-window expiry is L06, unchanged)"
+      trigger: "Applicable cutoff/window passes, or the order's capacity_hold reaches hold_state EXPIRED, before order reaches CONFIRMED"
+      actor: system
+      requires_operator_action: false
+      reason_code: [cutoff_passed, hold_expired]
+
+  # ---------------------------------------------------------------------------
+  # 2.4 Procurement dimension: add group_table to NOT_APPLICABLE
+  # ---------------------------------------------------------------------------
+  - id: EXT-06C
+    op: EXTEND_STATE
+    target: "procurement_states[id=NOT_APPLICABLE]"
+    rationale: >
+      DIRECT branch of gates.to_CONFIRMED (EXT-06) requires
+      procurement_status = NOT_APPLICABLE for every DIRECT order type,
+      group_table included. No procurement concept is invented — this
+      is purely adding group_table to an applicability list that already
+      exists for scheduled_preorder, same_day, and group_catering.
+    baseline_value:
+      id: NOT_APPLICABLE
+      label: "Not applicable"
+      description: "Order type is not institutional; this dimension is inert."
+      applicable_order_types: [scheduled_preorder, same_day, group_catering]
+    result:
+      id: NOT_APPLICABLE
+      label: "Not applicable"
+      description: "Order type is not institutional; this dimension is inert."
+      applicable_order_types: [scheduled_preorder, same_day, group_catering, group_table]
+
+  # ---------------------------------------------------------------------------
+  # 2.5 Confirmation gate: broaden the DIRECT branch (baseline: gates.to_CONFIRMED)
+  # ---------------------------------------------------------------------------
+  - id: EXT-06
+    op: EXTEND_GATE
+    target: "gates.to_CONFIRMED"
+    delta: >
+      (a) Broaden the third bullet condition from "scheduled_preorder/
+      same_day" to every DIRECT order type. (b) Add group_table and
+      group_catering-DIRECT entries to payment_condition_by_order_type.
+      (c) Reference the external aggregate-review-threshold rule
+      (ADD-04) as an additional condition for the order types it applies
+      to. (d) The existing procurement condition, institutional payment
+      branch, and PAYMENT_NOT_YET_DUE guardrail are UNCHANGED — quoted
+      verbatim below for completeness only, not modified.
+    result:
+      to_CONFIRMED:
+        description: >
+          An order may cross into lifecycle CONFIRMED only when ALL of
+          the following hold. This is the single gate that prevents
+          inquiry-stage or quote-stage demand, unauthorized institutional
+          demand, or unresolved payment from ever being counted as
+          booked. The required payment condition differs by order type,
+          per the branches below — none of the branches ever bypass the
+          procurement condition. [UNCHANGED from V0]
+        conditions:
+          - "procurement_status is AUTHORIZED, NOT_REQUIRED, or NOT_APPLICABLE — never PENDING or DECLINED. Applies to every order type; PAYMENT_NOT_YET_DUE never substitutes for or bypasses this condition. [UNCHANGED from V0]"
+          - "For group_catering (REVIEWED only) and institutional: lifecycle has passed through CUSTOMER_ACCEPTED (acceptance recorded, verbal or written). [EXTENDED: now explicit that this bullet applies only to REVIEWED group_catering, matching EXT-06A; institutional behavior unchanged]"
+          - "For every DIRECT order type (scheduled_preorder, same_day, group_table, group_catering-when-DIRECT): the checkout capacity hold for this order has ACTIVE status and is being atomically converted in the same operation (see capacity_hold, EXT-07) — capacity is never decremented before this gate and never decremented twice. [EXTENDED from 'scheduled_preorder/same_day' to all DIRECT order types]"
+          - "For order types the aggregate_date_level_review_threshold rule applies to (ADD-04): the aggregate check for the operating date passes, OR the owner has explicitly authorized the overage. Same_day is explicitly excluded from this condition. [NEW]"
+        payment_condition_by_order_type:
+          scheduled_preorder_and_same_day: >
+            payment_status = PAID_IN_FULL. Not weakened by this patch —
+            direct consumer checkout still requires payment in full
+            before confirmation. [UNCHANGED from V0]
+          group_table: >
+            payment_status = PAID_IN_FULL. Standardized Tables are
+            prepaid by definition (see ADD-01) — no deposit-only path
+            exists for this order type. [NEW]
+          group_catering_DIRECT: >
+            payment_status = PAID_IN_FULL. Matches the current ordinary
+            direct-Catering proof rule: within standard published
+            offers/prices, full payment is required to confirm. [NEW]
+          group_catering_REVIEWED: >
+            payment_status = PAID_IN_FULL under the current ordinary
+            reviewed-Catering proof rule. DEPOSIT_RECEIVED remains an
+            available configured value once a future deposit policy is
+            explicitly approved — this narrows V0's baseline "DEPOSIT_
+            RECEIVED or PAID_IN_FULL, CONFIGURABLE/OPEN" framing to its
+            current default under decision-register item E2, without
+            closing E2 or deleting the DEPOSIT_RECEIVED option from the
+            architecture. Approving a deposit policy later amends this
+            payment gate without altering any already-recorded
+            quote-history truth (QUOTE_SENT/CUSTOMER_ACCEPTED stand
+            regardless). [RENAMED/CLARIFIED from V0's single
+            'group_catering' entry — see decision register update D-01
+            in the acceptance-tests companion]
+          institutional: >
+            payment_status = DEPOSIT_RECEIVED, PAID_IN_FULL, OR
+            PAYMENT_NOT_YET_DUE. The PAYMENT_NOT_YET_DUE branch is valid
+            ONLY when: (a) the applicable institutional/payment terms
+            for this counterparty allow payment after fulfillment or
+            invoicing; (b) customer acceptance has been recorded
+            (CUSTOMER_ACCEPTED); (c) procurement_status is AUTHORIZED or
+            legitimately NOT_REQUIRED for that counterparty; and (d)
+            every other confirmation prerequisite above is satisfied.
+            Whether a given institutional order actually uses
+            PAYMENT_NOT_YET_DUE, versus requiring payment/deposit at
+            booking, is a per-counterparty term — never assumed by
+            default. [UNCHANGED from V0]
+
+  # ---------------------------------------------------------------------------
+  # 2.6 Capacity hold: generalize scope to every DIRECT checkout flow
+  # ---------------------------------------------------------------------------
+  - id: EXT-07
+    op: EXTEND_SCOPE
+    target: "capacity_hold (purpose / sequence / scope preamble; hold_states, hold_transitions, guardrail, explicitly_out_of_scope are UNCHANGED and not restated here)"
+    baseline_scope_comment: >
+      V0's capacity_hold section preamble read: "Applies to
+      scheduled_preorder and same_day order types at checkout."
+    result_scope_statement: >
+      Applies to every DIRECT checkout flow: scheduled_preorder,
+      same_day, group_table, and group_catering when commercial_workflow
+      = DIRECT. REVIEWED group_catering and institutional inquiry/
+      qualification/quote stages continue to receive NO automatic
+      capacity hold, exactly as already stated in V0's
+      explicitly_out_of_scope bullets (unchanged, and now explicitly
+      confirmed to cover REVIEWED group_catering specifically, not only
+      group_catering generally).
+    purpose_unchanged: >
+      "Prevent two simultaneous checkouts from both succeeding against
+      the same final unit of date/item/same-day capacity" now reads, for
+      DIRECT group_table and DIRECT group_catering, as "the same final
+      unit of date/package-slot/sellable-quantity capacity" — the
+      mechanism is identical; only the kind of unit being protected
+      broadens to match the newly-DIRECT order types. No new hold state
+      is introduced (ACTIVE / CONVERTED / EXPIRED / RELEASED remain the
+      complete set, unchanged from V0).
+    concurrency_guardrail_reaffirmed: >
+      "Two customers cannot both hold the same last sellable unit/date
+      allocation" (governing patch spec section 7) is the same guardrail
+      already stated in V0's capacity_hold.guardrail — this patch does
+      not add a new rule here, it applies the existing one to a wider
+      set of order types.
+
+  # ---------------------------------------------------------------------------
+  # 2.7 Capacity layers: clarify how DIRECT Tables/Catering participate
+  # ---------------------------------------------------------------------------
+  - id: EXT-08
+    op: CLARIFY_ONLY
+    target: "capacity_layers.ALLOCATED_CAPACITY (description); pool_reallocation (unchanged)"
+    clarification: >
+      Group_table and DIRECT group_catering now also participate in the
+      TEMPORARILY_HELD_CAPACITY and CONFIRMED_CAPACITY layers via the
+      generalized capacity_hold (EXT-07), the same way scheduled_preorder
+      and same_day already did. This patch does NOT require them to use
+      a formal, named, reallocatable "pool" the way scheduled_preorder
+      and same_day do — pool_reallocation's rules and worked example
+      remain scoped exactly as V0 defined them (scheduled-preorder pool
+      <-> same-day pool only) and are NOT extended to group_table or
+      group_catering by this patch. Same-day's status as a separate
+      released-inventory pool, outside the aggregate_date_level_review_
+      threshold counter (ADD-04), is preserved unchanged (see
+      ACCEPTANCE_TESTS Test 14).
+    no_change_to: ["pool_reallocation.principle", "pool_reallocation.rules", "pool_reallocation.worked_example"]
+
+# =============================================================================
+# PART 3 — NEW GUARDRAILS (appended to the existing guardrails: list; none
+# of V0's existing guardrails are altered or removed)
+# =============================================================================
+
+new_guardrails:
+  - id: G-16
+    rule: "A DIRECT order (order_type in {scheduled_preorder, same_day, group_table} or group_catering with commercial_workflow=DIRECT) never has QUOTE_SENT or CUSTOMER_ACCEPTED in its recorded history, under any circumstance — not even for compatibility or reporting convenience."
+    prevents: "Fabricated quote/acceptance events that did not occur (ACCEPTANCE_TESTS Test 09)."
+  - id: G-17
+    rule: "commercial_workflow is never inferred from order_type alone for group_catering (it may legitimately be either DIRECT or REVIEWED) and is never inferred from customer/account identity for any order type."
+    prevents: "Silently treating every group_catering order as REVIEWED, or forcing institutional procurement semantics onto an ordinary card transaction merely because the buyer is an institutional/company account (ACCEPTANCE_TESTS Tests 04, 11)."
+  - id: G-18
+    rule: "REVIEWED group_catering and institutional inquiry/qualification/quote stages receive no automatic capacity hold; a quote never reserves the date (reaffirms existing V0 capacity_hold.explicitly_out_of_scope, now explicit for REVIEWED specifically)."
+    prevents: "A quoted-but-unconfirmed reviewed order blocking a concurrent DIRECT sale of the same capacity (ACCEPTANCE_TESTS Tests 06, 07)."
+  - id: G-19
+    rule: "Immediately before payment/confirmation on a REVIEWED order, date-level capacity and any applicable owner-review rule are rechecked concurrency-safely against current state, not against the state at the time the quote was issued."
+    prevents: "A stale accepted quote bypassing a capacity or review rule that changed between quote issuance and payment (ACCEPTANCE_TESTS Test 07)."
+  - id: G-20
+    rule: "DIRECT group_table and DIRECT group_catering orders count as booked/confirmed demand only at lifecycle CONFIRMED, exactly like every other order type — never earlier (e.g., at DRAFT or at hold-ACTIVE)."
+    prevents: "Overstating booked demand from in-progress DIRECT checkouts that have not yet confirmed."
+
+# =============================================================================
+# PART 4 — REPORTING / AUDIT PATCH
+# =============================================================================
+
+reporting_patch:
+  target: "reporting_dimensions (additive — no existing figure definition changes)"
+  required_preserved_fields_per_order_record:
+    - order_type
+    - commercial_workflow
+    - lifecycle_status
+    - payment_status
+    - procurement_status
+    - fulfillment_status
+  non_inference_guardrails:
+    - "Do not infer commercial_workflow=REVIEWED from order_type=group_catering — group_catering may be DIRECT or REVIEWED and both must be independently recorded."
+    - "Do not infer quote history when QUOTE_SENT did not occur."
+    - "Do not infer procurement_status from customer/account identity."
+  confirmed_booked_revenue_note: >
+    DIRECT group_table and DIRECT group_catering revenue is included in
+    reporting_dimensions.confirmed_booked_revenue (defined in V0,
+    unchanged) under the exact same rule already stated there: lifecycle
+    >= CONFIRMED, regardless of payment_status. No new revenue category
+    is created by this patch.
+
+# =============================================================================
+# PART 5 — UNCHANGED BASELINE ELEMENTS (explicit confirmation, for the
+# consolidator's benefit — these are NOT touched by this patch)
+# =============================================================================
+
+explicitly_unchanged:
+  - "lifecycle_states: the full set (DRAFT, INQUIRY, QUALIFICATION, QUOTE_SENT, CUSTOMER_ACCEPTED, CONFIRMED, PRODUCTION_COMMITTED, EXCEPTION, CANCELLED, EXPIRED, CLOSED) — no state added, removed, or renamed."
+  - "reason_code_catalog — unchanged."
+  - "lifecycle_transitions L10, L11, L12, L13, L14, L16, L17 — unchanged (all already applicable_order_types: [all], so group_table flows through them without modification)."
+  - "payment_states and payment_transitions — unchanged. group_table uses only the [all]-applicable states (NOT_STARTED, PAYMENT_PENDING, PAYMENT_FAILED, PAID_IN_FULL, REFUND_OR_REVERSAL_PENDING, REFUNDED_OR_REVERSED), consistent with being always-prepaid."
+  - "procurement_states NOT_REQUIRED / PENDING / AUTHORIZED / DECLINED, and procurement_transitions — unchanged. No PROCUREMENT_AUTHORIZED or any other concept added as a third commercial_workflow value."
+  - "fulfillment_states and fulfillment_transitions — unchanged."
+  - "gates.to_PRODUCTION_COMMITTED and gates.to_CLOSED — unchanged."
+  - "capacity_hold.hold_states, capacity_hold.hold_transitions, capacity_hold.guardrail, capacity_hold.explicitly_out_of_scope — unchanged (only the scope preamble is extended, per EXT-07)."
+  - "capacity_layers (PHYSICAL_CAPACITY, SELLABLE_CAPACITY, TEMPORARILY_HELD_CAPACITY, CONFIRMED_CAPACITY) and pool_reallocation.principle/rules/worked_example — unchanged (see EXT-08)."
+  - "All existing guardrails (V0's 10 guardrails) — unchanged, and continue to hold for every order type including group_table."
+  - "reporting_dimensions.items, payment_not_yet_due_note, guardrail — unchanged (see reporting_patch above for the additive preservation requirement)."
+  - "production_manifest_model — unchanged. DIRECT Tables/Catering enter the manifest via the same PRODUCTION_COMMITTED mechanism as every other order type."
+  - "LOUMIES_ORDER_STATE_MODEL_V0.yaml itself — not modified, not replaced, not rewritten. Blob SHA at HEAD remains 1e3ae49440ee05c560dd70752ba402d5bd8cab69."
+
+# =============================================================================
+# PART 6 — SELF-CHECK AGAINST GOVERNING CONSTRAINTS
+# =============================================================================
+
+self_check:
+  - constraint: "No new lifecycle states"
+    result: "PASS — 11 lifecycle states before and after this patch; only transition applicability and one new orthogonal field were touched."
+  - constraint: "No parallel state machine"
+    result: "PASS — group_table and DIRECT group_catering reuse the exact same lifecycle_states, lifecycle_transitions (extended, not duplicated), payment_states, procurement_states, and fulfillment_states as every other order type."
+  - constraint: "No third commercial_workflow value; procurement stays orthogonal"
+    result: "PASS — commercial_workflow has exactly two values (DIRECT, REVIEWED); procurement_states/procurement_transitions are untouched except adding group_table to one existing applicability list (EXT-06C)."
+  - constraint: "DIRECT orders carry no fake QUOTE_SENT/CUSTOMER_ACCEPTED"
+    result: "PASS — EXT-05/EXT-06A structurally separate the DIRECT path (L01) from the quote path (L02-L09); G-16 states this as an explicit guardrail."
+  - constraint: "REVIEWED quotes do not hold capacity"
+    result: "PASS — capacity_hold's explicitly_out_of_scope bullets are unchanged and reaffirmed as G-18."
+  - constraint: "$3,000 rule stays configurable, not hard-coded universal physical capacity"
+    result: "PASS — represented as external_business_rules.aggregate_date_level_review_threshold (ADD-04), a named configurable gate referenced by, not embedded into, lifecycle mechanics; routes to the existing EXCEPTION state rather than a new one."
